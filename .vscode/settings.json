@@ -1,0 +1,11 @@
+{
+  "files.associations": {
+    "__split_buffer": "cpp",
+    "deque": "cpp",
+    "string": "cpp",
+    "vector": "cpp",
+    "istream": "cpp",
+    "array": "cpp",
+    "string_view": "cpp"
+  }
+}

@@ -1,35 +1,47 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
+cmake_minimum_required(VERSION 3.10)
+project(Gopher)
 
-# Name of the project
-PROJECT(Gopher)
+file(GLOB_RECURSE SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE HEADERS "${CMAKE_SOURCE_DIR}/src/*.h")
+file(GLOB_RECURSE GLSL    "${CMAKE_SOURCE_DIR}/resources/*.glsl")
 
-# Use glob to get the list of all source files.
-# We don't really need to include header and resource files to build, but it's
-# nice to have them also show up in IDEs.
-IF(${SOL})
-	FILE(GLOB_RECURSE SOURCES "src0/*.cpp")
-	FILE(GLOB_RECURSE HEADERS "src0/*.h")
-	FILE(GLOB_RECURSE GLSL "resources0/*.glsl")
-ELSE()
-	FILE(GLOB_RECURSE SOURCES "src/*.cpp")
-	FILE(GLOB_RECURSE HEADERS "src/*.h")
-	FILE(GLOB_RECURSE GLSL "resources/*.glsl")
-ENDIF()
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Generate compile_commands.json, used by Clangd, Clion, etc.
-SET(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+message(STATUS "All .cpp sources found:")
+foreach(srcFile ${SOURCES})
+    message(STATUS "  ${srcFile}")
+endforeach()
 
-# Set the executable.
-ADD_EXECUTABLE(${CMAKE_PROJECT_NAME} ${SOURCES} ${HEADERS} ${GLSL})
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
 
-# //////////////////////////////
-# Tell CMake to find OpenCV (installed via Homebrew or from source)
-find_package(OpenCV REQUIRED)  # this uses OpenCVConfig.cmake or `pkg-config`
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED
+    libavcodec
+    libavutil
+    libavformat
+    libswscale
+    libswresample
+)
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${OpenCV_LIBS})
-# //////////////////////////////
+include_directories(${FFMPEG_INCLUDE_DIRS})
+link_directories(${FFMPEG_LIBRARY_DIRS})
 
-# Use c++21
-SET_TARGET_PROPERTIES(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 20)
-SET_TARGET_PROPERTIES(${CMAKE_PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX)
+add_executable(${PROJECT_NAME}
+    ${SOURCES}
+    ${HEADERS}
+    ${GLSL}
+)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    ${OpenCV_LIBS}
+    ${FFMPEG_LIBRARIES}
+    "-framework AudioToolbox"
+    "-framework VideoToolbox"
+    "-framework CoreFoundation"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
+    "-framework CoreAudio"
+    "-lz"
+    "-liconv"
+)
