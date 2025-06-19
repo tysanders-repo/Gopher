@@ -10,6 +10,11 @@ pkg_check_modules(FFMPEG REQUIRED
 )
 find_package(OpenCV REQUIRED)
 
+if(APPLE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS")
+endif()
+
+
 # Common includes and flags
 include_directories(
   ${FFMPEG_INCLUDE_DIRS}
@@ -27,7 +32,11 @@ target_link_libraries(gopherd PRIVATE
 )
 
 # === Gopher Client ===
-file(GLOB_RECURSE CLIENT_SRC "src/gopher_client.cpp")
+file(GLOB_RECURSE CLIENT_SRC
+    "src/gopher_client.cpp"
+    "src/ffmpeg_sender.cpp"
+    "src/ffmpeg_receiver.cpp"
+)
 add_executable(gopher_client ${CLIENT_SRC})
 target_link_libraries(gopher_client PRIVATE
   ${OpenCV_LIBRARIES}

@@ -11,9 +11,18 @@
 #include <mutex>
 #include <fcntl.h>
 #include <chrono>
+#include <queue>
+#include <condition_variable>
 
 //video specific includes
 #include <opencv2/opencv.hpp>
+
+// Fix for macOS Block.h issue - include this before FFmpeg headers
+#ifdef __APPLE__
+#define __STDC_CONSTANT_MACROS
+#define __STDC_FORMAT_MACROS
+#define __STDC_LIMIT_MACROS
+#endif
 
 extern "C" {
 #include <libavdevice/avdevice.h>
@@ -25,11 +34,17 @@ extern "C" {
 
 // my stuff :)
 #include "gopherd_helper.hpp"
+#include "ffmpeg_sender.hpp"
+#include "ffmpeg_receiver.hpp"
 
 #ifdef __APPLE__
 #include <VideoToolbox/VideoToolbox.h>
 #endif
 
+// Declare external variables from ffmpeg_sender.cpp
+extern std::queue<cv::Mat> display_queue;
+extern std::mutex display_mutex;
+extern std::condition_variable display_cv;
 
 struct Gopher {
   std::string name;
@@ -40,7 +55,6 @@ struct Gopher {
 Gopher me_gopher;
 Gopher them_gopher;
 
-
 std::string gopher_name;
 uint16_t listening_port;
 std::vector<std::thread> threads;
@@ -50,7 +64,6 @@ std::queue<cv::Mat> frame_queue;
 std::mutex frame_mutex;
 std::condition_variable frame_cv;
 pid_t gopherd_pid = -1;
-
 
 /* 
   defintely not my original code, common pattern to get local IP address
@@ -103,17 +116,14 @@ int broadcast(){
   addr.sin_port = htons(43753);
   addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
-
   std::string message = "name:" + gopher_name + ";ip:" + get_local_ip() + ";port:" +  std::to_string(listening_port) + ";";
 
   while(true){
-
     // send the broadcast message
     // std::cout << "Broadcasting: " << message << "\n";
     sendto(sock, message.c_str(), message.size(), 0, (struct sockaddr*)&addr, sizeof(addr));
     sleep(5);
   }
-  
 }
 
 std::vector<Gopher> query_daemon_for_gophers() {
@@ -166,113 +176,33 @@ int create_listening_socket(uint16_t& out_port) {
   return sock;
 }
 
+//---------------------------------------------
 
-
-
-void sending_thread(const std::string& ip, uint16_t port) {
-    std::cout << "Starting sender to " << ip << ":" << port << std::endl;
-    
-    // Simple OpenCV capture
-    cv::VideoCapture cap(0, cv::CAP_AVFOUNDATION);
-    if (!cap.isOpened()) {
-        std::cerr << "Cannot open camera!" << std::endl;
-        return;
+void ffmpeg_sending_thread(const std::string& ip, uint16_t port) {
+    FFmpegSender sender;
+    if (sender.initialize(ip, port)) {
+        std::cout << "Starting FFmpeg sender to " << ip << ":" << port << std::endl;
+        sender.run();
     }
-    
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1920);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 1080);
-    cap.set(cv::CAP_PROP_FPS, 60);
-    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G')); // Hardware MJPEG
-    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
-    
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
-    
-    cv::Mat frame;
-    std::vector<uchar> buffer;
-    std::vector<int> params = {
-        cv::IMWRITE_JPEG_QUALITY, 25,           // Good quality/speed balance
-        cv::IMWRITE_JPEG_OPTIMIZE, 1,           // Optimize Huffman tables
-    };
-    
-    std::cout << "Sending video..." << std::endl;
-    
-    while (true) {
-        cap >> frame;
-        if (frame.empty()) {
-            std::cerr << "Empty frame" << std::endl;
-            continue;
-        }
-        
-        // Encode as JPEG
-        if (!cv::imencode(".jpg", frame, buffer, params)) {
-            std::cerr << "Failed to encode frame" << std::endl;
-            continue;
-        }
-        
-        // Send size first, then data
-        uint32_t size = htonl(buffer.size());
-        sendto(sock, &size, sizeof(size), 0, (sockaddr*)&addr, sizeof(addr));
-        
-        // Send in chunks if needed
-        const size_t MAX_CHUNK = 1400;
-        size_t offset = 0;
-        while (offset < buffer.size()) {
-            size_t chunk_size = std::min(MAX_CHUNK, buffer.size() - offset);
-            sendto(sock, buffer.data() + offset, chunk_size, 0, (sockaddr*)&addr, sizeof(addr));
-            offset += chunk_size;
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 10 FPS
-    }
-    
-    close(sock);
-    cap.release();
 }
 
-void listener_thread(int sock) {
-    std::cout << "Starting listener on socket " << sock << std::endl;
-    
-    std::vector<uchar> buffer;
-    uchar recv_buf[2048];
-    
-    while (true) {
-        // Receive size
-        uint32_t expected_size;
-        int n = recvfrom(sock, &expected_size, sizeof(expected_size), 0, nullptr, nullptr);
-        if (n != sizeof(expected_size)) continue;
-        
-        expected_size = ntohl(expected_size);
-        if (expected_size > 100000) continue; // Sanity check
-        
-        buffer.clear();
-        buffer.reserve(expected_size);
-        
-        // Receive data
-        while (buffer.size() < expected_size) {
-            n = recvfrom(sock, recv_buf, sizeof(recv_buf), 0, nullptr, nullptr);
-            if (n <= 0) break;
-            
-            buffer.insert(buffer.end(), recv_buf, recv_buf + n);
-        }
-        
-        if (buffer.size() >= expected_size) {
-            // Decode JPEG and add to queue for main thread
-            cv::Mat img = cv::imdecode(buffer, cv::IMREAD_COLOR);
-            if (!img.empty()) {
-                std::lock_guard<std::mutex> lock(frame_mutex);
-                frame_queue.push(img.clone());
-                frame_cv.notify_one();
-            }
-        }
+void ffmpeg_listener_thread(int existing_sock_fd, uint16_t listen_port) {
+    FFmpegReceiver receiver;
+    if (receiver.initialize(existing_sock_fd, listen_port)) {
+        std::cout << "Starting FFmpeg receiver on port " << listen_port << std::endl; 
+        receiver.run();
     }
-    
-    close(sock);
 }
 
+struct AVPacketData {
+    std::vector<uint8_t> data;
+    bool is_video;
+    int64_t pts;
+};
+
+std::queue<AVPacketData> packet_queue;
+std::mutex packet_mutex;
+std::condition_variable packet_cv;
 
 void setup_hardware_acceleration() {
     // For macOS - enable hardware acceleration
@@ -305,7 +235,6 @@ int main() {
     std::cout << "My IP: " << me_gopher.ip << ":" << me_gopher.port << std::endl;
     
     threads.emplace_back(broadcast);
-    threads.emplace_back(listener_thread, listening_socket);
     
     while (true) {
         system("clear");
@@ -354,36 +283,22 @@ int main() {
             
             if (found) {
                 std::cout << "Connecting to " << selected_gopher.name << "..." << std::endl;
-                threads.emplace_back(sending_thread, selected_gopher.ip, selected_gopher.port);
-                
-                // Display received video on main thread (macOS requirement)
-                cv::namedWindow("Received Video", cv::WINDOW_AUTOSIZE);
-                
-                std::cout << "Receiving video... Press ESC to stop." << std::endl;
-                bool receiving = true;
-                while (receiving) {
-                    std::unique_lock<std::mutex> lock(frame_mutex);
+                threads.emplace_back(ffmpeg_sending_thread, selected_gopher.ip, selected_gopher.port);
+                threads.emplace_back(ffmpeg_listener_thread, listening_socket, listening_port);
                     
-                    // Wait for frame with timeout
-                    if (frame_cv.wait_for(lock, std::chrono::milliseconds(100), 
-                                         [] { return !frame_queue.empty(); })) {
-                        cv::Mat img = frame_queue.front();
-                        frame_queue.pop();
-                        lock.unlock();
-                        
-                        cv::imshow("Received Video", img);
-                        int key = cv::waitKey(1);
-                        if (key == 27) { // ESC
-                            receiving = false;
-                        }
-                    } else {
-                        lock.unlock();
-                        // Check if user wants to exit via keyboard
-                        int key = cv::waitKey(1);
-                        if (key == 27) {
-                            receiving = false;
-                        }
-                    }
+                // Display received video
+                cv::namedWindow("Received Video", cv::WINDOW_AUTOSIZE);
+                    
+                while (true) {
+                    std::unique_lock<std::mutex> lock(display_mutex);
+                    display_cv.wait(lock, [] { return !display_queue.empty(); });
+                    
+                    cv::Mat frame = display_queue.front();
+                    display_queue.pop();
+                    lock.unlock();
+                    
+                    cv::imshow("Received Video", frame);
+                    if (cv::waitKey(1) == 27) break; // ESC to exit
                 }
                 
                 cv::destroyAllWindows();
