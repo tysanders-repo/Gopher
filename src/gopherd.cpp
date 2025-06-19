@@ -140,11 +140,21 @@ int main(int argc, char* argv[])
       while (true) {
 #ifdef _WIN32
         HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
-        DWORD wait_code = WaitForSingleObject(h, 1000);
+        if (h == NULL) {
+          std::cerr << "[gopherd] Parent not found. Exiting...\n";
+          exit(0);
+        }
+        DWORD wait_code = WaitForSingleObject(h, 1000);  // Wait up to 1 second
         CloseHandle(h);
-        if (wait_code != WAIT_TIMEOUT) exit(0);
+        if (wait_code != WAIT_TIMEOUT) {
+          std::cerr << "[gopherd] Parent terminated. Exiting...\n";
+          exit(0);
+        }
 #else
-        if (kill(parent_pid, 0) != 0) exit(0);
+        if (kill(parent_pid, 0) != 0) {
+          std::cerr << "[gopherd] Parent terminated. Exiting...\n";
+          exit(0);
+        }
         std::this_thread::sleep_for(std::chrono::seconds(1));
 #endif
       }

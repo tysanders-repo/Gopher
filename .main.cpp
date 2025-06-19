@@ -20,7 +20,7 @@ int main() {
 
     AVFormatContext* fmt_ctx = nullptr;
     AVDictionary* options = nullptr;
-    av_dict_set(&options, "video_size", "640x480", 0);
+    av_dict_set(&options, "video_size", "1920x1080", 0);
     av_dict_set(&options, "framerate", "30", 0);
 
     if (avformat_open_input(&fmt_ctx, "0:", input_fmt, &options) < 0) {
