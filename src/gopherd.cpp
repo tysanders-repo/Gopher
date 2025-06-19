@@ -129,43 +129,199 @@ void tcp_server() {
   }
 }
 
+// Fixed daemon cleanup in gopherd.cpp
+volatile sig_atomic_t running = 1;
 
-int main(int argc, char* argv[])
-{
-  pid_t parent_pid = -1;
+void signal_handler(int sig) {
+    running = 0;
+}
 
-  if (argc > 1) {
-    parent_pid = static_cast<pid_t>(std::stoi(argv[1]));
-    std::thread([parent_pid]() {
-      while (true) {
+int main(int argc, char* argv[]) {
+    signal(SIGTERM, signal_handler);
+    signal(SIGINT, signal_handler);
+    
+    pid_t parent_pid = -1;
+    if (argc > 1) {
+        parent_pid = static_cast<pid_t>(std::stoi(argv[1]));
+    }
+    
+    // Parent monitoring thread with proper error handling
+    std::thread monitor_thread([parent_pid]() {
+        while (running) {
 #ifdef _WIN32
-        HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
-        if (h == NULL) {
-          std::cerr << "[gopherd] Parent not found. Exiting...\n";
-          exit(0);
-        }
-        DWORD wait_code = WaitForSingleObject(h, 1000);  // Wait up to 1 second
-        CloseHandle(h);
-        if (wait_code != WAIT_TIMEOUT) {
-          std::cerr << "[gopherd] Parent terminated. Exiting...\n";
-          exit(0);
-        }
+            if (parent_pid > 0) {
+                HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, parent_pid);
+                if (h == NULL) {
+                    std::cerr << "[gopherd] Parent process not found. Exiting.\n";
+                    running = 0;
+                    return;
+                }
+                
+                DWORD exit_code;
+                if (GetExitCodeProcess(h, &exit_code) && exit_code != STILL_ACTIVE) {
+                    std::cerr << "[gopherd] Parent process terminated. Exiting.\n";
+                    running = 0;
+                    CloseHandle(h);
+                    return;
+                }
+                CloseHandle(h);
+            }
 #else
-        if (kill(parent_pid, 0) != 0) {
-          std::cerr << "[gopherd] Parent terminated. Exiting...\n";
-          exit(0);
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (parent_pid > 0) {
+                // Use kill(pid, 0) to check if process exists
+                if (kill(parent_pid, 0) == -1) {
+                    if (errno == ESRCH) {
+                        std::cerr << "[gopherd] Parent process terminated. Exiting.\n";
+                        running = 0;
+                        return;
+                    }
+                }
+            }
 #endif
-      }
-    }).detach();
-  }
-
-  std::thread udp_thread(udp_listener);
-  std::thread tcp_thread(tcp_server);
-
-  udp_thread.join();
-  tcp_thread.join();
-
-  return 0;
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    });
+    
+    // Modified UDP listener with running flag
+    auto udp_listener_safe = []() {
+#ifdef _WIN32
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock < 0) return;
+        
+        // Set socket timeout to allow checking running flag
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(BROADCAST_PORT);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        
+        if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(sock);
+            return;
+        }
+        
+        char buffer[1024];
+        sockaddr_in sender;
+        socklen_t sender_len = sizeof(sender);
+        
+        while (running) {
+            int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, 
+                           (struct sockaddr*)&sender, &sender_len);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue; // Timeout, check running flag
+                }
+                break;
+            }
+            
+            buffer[n] = '\0';
+            
+            // Parse message safely
+            std::string msg(buffer);
+            size_t name_pos = msg.find("name:");
+            size_t ip_pos = msg.find(";ip:");
+            size_t port_pos = msg.find(";port:");
+            
+            if (name_pos == std::string::npos || ip_pos == std::string::npos || 
+                port_pos == std::string::npos) continue;
+            
+            std::string name = msg.substr(name_pos + 5, ip_pos - (name_pos + 5));
+            std::string ip = msg.substr(ip_pos + 4, port_pos - (ip_pos + 4));
+            
+            try {
+                uint16_t port = static_cast<uint16_t>(std::stoi(msg.substr(port_pos + 6)));
+                
+                std::lock_guard<std::mutex> lock(gopher_mutex);
+                
+                // Remove duplicates and add new gopher
+                gophers.erase(std::remove_if(gophers.begin(), gophers.end(),
+                    [&](const Gopher& g) {
+                        return g.name == name && g.ip == ip && g.port == port;
+                    }), gophers.end());
+                
+                gophers.push_back(Gopher{name, ip, port});
+                
+            } catch (const std::exception& e) {
+                // Invalid port number, skip
+                continue;
+            }
+        }
+        
+        close(sock);
+    };
+    
+    // Modified TCP server with running flag  
+    auto tcp_server_safe = []() {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) return;
+        
+        // Set socket timeout
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(QUERY_PORT);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        
+        if (bind(sock, (sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(sock);
+            return;
+        }
+        
+        listen(sock, 5);
+        
+        while (running) {
+            sockaddr_in client;
+            socklen_t len = sizeof(client);
+            
+            int conn = accept(sock, (sockaddr*)&client, &len);
+            if (conn < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
+                }
+                break;
+            }
+            
+            std::lock_guard<std::mutex> lock(gopher_mutex);
+            std::string response;
+            
+            for (const auto& g : gophers) {
+                response += g.name + "," + g.ip + "," + std::to_string(g.port) + "\n";
+            }
+            
+            send(conn, response.c_str(), response.length(), 0);
+            close(conn);
+        }
+        
+        close(sock);
+    };
+    
+    std::thread udp_thread(udp_listener_safe);
+    std::thread tcp_thread(tcp_server_safe);
+    
+    // Wait for shutdown signal
+    monitor_thread.join();
+    
+    // Clean shutdown
+    running = 0;
+    if (udp_thread.joinable()) udp_thread.join();
+    if (tcp_thread.joinable()) tcp_thread.join();
+    
+    return 0;
 }
