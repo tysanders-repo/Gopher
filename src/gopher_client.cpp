@@ -26,6 +26,10 @@ extern "C" {
 // my stuff :)
 #include "gopherd_helper.hpp"
 
+#ifdef __APPLE__
+#include <VideoToolbox/VideoToolbox.h>
+#endif
+
 
 struct Gopher {
   std::string name;
@@ -145,7 +149,6 @@ std::vector<Gopher> query_daemon_for_gophers() {
   return result;
 }
 
-
 int create_listening_socket(uint16_t& out_port) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   
@@ -163,21 +166,24 @@ int create_listening_socket(uint16_t& out_port) {
   return sock;
 }
 
-// Replace your existing sending_thread and listener_thread with these:
+
+
 
 void sending_thread(const std::string& ip, uint16_t port) {
     std::cout << "Starting sender to " << ip << ":" << port << std::endl;
     
     // Simple OpenCV capture
-    cv::VideoCapture cap(0);
+    cv::VideoCapture cap(0, cv::CAP_AVFOUNDATION);
     if (!cap.isOpened()) {
         std::cerr << "Cannot open camera!" << std::endl;
         return;
     }
     
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 320);   // Smaller for UDP
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 240);
-    cap.set(cv::CAP_PROP_FPS, 10);
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1920);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 1080);
+    cap.set(cv::CAP_PROP_FPS, 60);
+    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G')); // Hardware MJPEG
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
     
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in addr{};
@@ -187,7 +193,10 @@ void sending_thread(const std::string& ip, uint16_t port) {
     
     cv::Mat frame;
     std::vector<uchar> buffer;
-    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 50}; // Lower quality for speed
+    std::vector<int> params = {
+        cv::IMWRITE_JPEG_QUALITY, 25,           // Good quality/speed balance
+        cv::IMWRITE_JPEG_OPTIMIZE, 1,           // Optimize Huffman tables
+    };
     
     std::cout << "Sending video..." << std::endl;
     
@@ -264,14 +273,23 @@ void listener_thread(int sock) {
     close(sock);
 }
 
-// Also fix your main loop - the issue is here:
-// After starting the sending thread, you immediately try to display received frames
-// but the listener_thread is already handling the display!
 
-// Replace the main loop section after thread creation:
+void setup_hardware_acceleration() {
+    // For macOS - enable hardware acceleration
+    #ifdef __APPLE__
+    setenv("OPENCV_AVFOUNDATION_USE_NATIVE_CAPTURE", "1", 1);
+    #endif
+    
+    // For Linux - enable V4L2 hardware acceleration
+    #ifdef __linux__
+    setenv("OPENCV_VIDEOIO_PRIORITY_V4L2", "1", 1);
+    #endif
+}
+
 int main() {
     ensure_daemon_running("./gopherd");
-    
+    setup_hardware_acceleration();
+
     std::vector<std::string> menu = {"Exit"};
     int selected = 0;
     
