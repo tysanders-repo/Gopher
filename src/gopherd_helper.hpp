@@ -48,6 +48,11 @@ inline bool launch_daemon(const std::string& daemon_path = "gopherd") {
 #ifdef _WIN32
   STARTUPINFOA si = { sizeof(si) };
   PROCESS_INFORMATION pi;
+
+  DWORD parent_pid = GetCurrentProcessId();
+  std::stringstream cmd;
+  cmd << daemon_path << " " << parent_pid;
+
   std::string cmd = daemon_path + "";
   BOOL success = CreateProcessA(
     NULL, const_cast<char*>(cmd.c_str()), NULL, NULL, FALSE,
@@ -62,6 +67,7 @@ inline bool launch_daemon(const std::string& daemon_path = "gopherd") {
   }
 #else
   pid_t pid;
+  std::string parent_pid = std::to_string(getpid());
   char* argv[] = { const_cast<char*>(daemon_path.c_str()), nullptr };
   int status = posix_spawnp(&pid, daemon_path.c_str(), nullptr, nullptr, argv, environ);
   return status == 0;

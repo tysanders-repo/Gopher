@@ -130,11 +130,32 @@ void tcp_server() {
 }
 
 
-int main()
+int main(int argc, char* argv[])
 {
+  pid_t parent_pid = -1;
+
+  if (argc > 1) {
+    parent_pid = static_cast<pid_t>(std::stoi(argv[1]));
+    std::thread([parent_pid]() {
+      while (true) {
+#ifdef _WIN32
+        HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
+        DWORD wait_code = WaitForSingleObject(h, 1000);
+        CloseHandle(h);
+        if (wait_code != WAIT_TIMEOUT) exit(0);
+#else
+        if (kill(parent_pid, 0) != 0) exit(0);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+#endif
+      }
+    }).detach();
+  }
+
   std::thread udp_thread(udp_listener);
   std::thread tcp_thread(tcp_server);
 
   udp_thread.join();
   tcp_thread.join();
+
+  return 0;
 }

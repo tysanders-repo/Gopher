@@ -27,9 +27,7 @@ Gopher me_gopher;
 std::string gopher_name;
 uint16_t listening_port;
 std::vector<std::thread> threads;
-std::vector<Gopher> gophers;
 std::mutex gopher_mutex;
-
 
 
 /* 
@@ -80,7 +78,7 @@ int broadcast(){
 
   sockaddr_in addr{}; 
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(8888);
+  addr.sin_port = htons(43753);
   addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
 
@@ -96,69 +94,39 @@ int broadcast(){
   
 }
 
-int listen_for_broadcasts(){
-  int sock = socket(AF_INET, SOCK_DGRAM, 0);
+std::vector<Gopher> query_daemon_for_gophers() {
+  std::vector<Gopher> result;
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return result;
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(8888);
-  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_port = htons(DAEMON_PORT);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-  bind(sock, (struct sockaddr*)&addr, sizeof(addr));
-  char buffer[1024];
+  if (connect(sock, (sockaddr*)&addr, sizeof(addr)) == 0) {
+    char buffer[2048];
+    int n = read(sock, buffer, sizeof(buffer) - 1);
+    if (n > 0) {
+      buffer[n] = '\0';
 
-  while(true) {
-    int len = sizeof(addr);
-    int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&addr, (socklen_t*)&len);
-    buffer[n] = '\0';
+      std::cout << "buffer: " << buffer << std::endl;
 
-    // Parse the received message
-    std::string message(buffer);
-    size_t name_start = message.find("name:") + 5;
-    size_t name_end = message.find(";", name_start);
-    size_t ip_start = message.find("ip:") + 3;
-    size_t ip_end = message.find(";", ip_start);
-    size_t port_start = message.find("port:") + 5;
-    size_t port_end = message.find(";", port_start);
-    std::string name = message.substr(name_start, name_end - name_start);
-    std::string ip = message.substr(ip_start, ip_end - ip_start);
-    uint16_t port = std::stoi(message.substr(port_start, port_end - port_start));
-
-    // Add to gophers list
-    Gopher gopher;
-    gopher.name = name;
-    gopher.ip = ip;
-    gopher.port = port;
-
-    // print out received gopher info
-    // std::cout << "Received Gopher: " << gopher.name << " (" << gopher.ip << ":" << gopher.port << ")\n";s
-
-    // ensure we don't add duplicates
-    gopher_mutex.lock();
-    bool is_me = (
-      gopher.name == me_gopher.name &&
-      gopher.ip == me_gopher.ip &&
-      gopher.port == me_gopher.port
-    );
-
-    if (!is_me) {
-      bool exists = false;
-      for (const auto& existing : gophers) {
-        if (
-          existing.name == gopher.name &&
-          existing.ip == gopher.ip &&
-          existing.port == gopher.port
-        ) {
-          exists = true;
-          break;
+      std::istringstream iss(buffer);
+      std::string line;
+      while (std::getline(iss, line)) {
+        std::istringstream ls(line);
+        std::string name, ip, port_str;
+        if (std::getline(ls, name, ',') &&
+            std::getline(ls, ip, ',') &&
+            std::getline(ls, port_str)) {
+          result.push_back(Gopher{name, ip, static_cast<uint16_t>(std::stoi(port_str))});
         }
       }
-      if (!exists) {
-        gophers.push_back(gopher);
-      }
     }
-    gopher_mutex.unlock();
   }
+  close(sock);
+  return result;
 }
 
 
@@ -182,6 +150,8 @@ int create_listening_socket(uint16_t& out_port) {
 
 
 int main() {
+  ensure_daemon_running("./gopherd");
+
   std::vector<std::string> menu = {"Exit"};
   int selected = 0;
 
@@ -210,10 +180,11 @@ int main() {
   */
 
   threads.emplace_back(broadcast);
-  threads.emplace_back(listen_for_broadcasts);
 
   while (true) {
     system("clear");
+
+    auto gophers = query_daemon_for_gophers();
 
     // Update the menu with discovered gophers
     gopher_mutex.lock();
