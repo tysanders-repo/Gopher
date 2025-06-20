@@ -31,6 +31,9 @@ public:
     void end_call();
     bool is_in_call() const;
     
+    // Video display - MUST be called from main thread on macOS
+    void process_video_display();
+    
     // Incoming call handling
     void set_incoming_call_callback(std::function<bool(const std::string&, const std::string&, uint16_t)> callback);
     
@@ -49,10 +52,12 @@ private:
     std::string gopher_name_;
     std::string local_ip_;
     uint16_t listening_port_;
+    std::string call_target_name_;
     
     std::atomic<bool> initialized_;
     std::atomic<bool> broadcasting_;
     std::atomic<bool> in_call_;
+    std::atomic<bool> display_thread_should_stop_;
     bool dev_mode_;
     
     int listening_socket_;
@@ -93,6 +98,8 @@ extern "C" {
     int gopher_start_call(GopherHandle* handle, const char* ip, uint16_t port);
     void gopher_end_call(GopherHandle* handle);
     int gopher_is_in_call(GopherHandle* handle);
+    
+    void gopher_process_video_display(GopherHandle* handle);
     
     void gopher_enable_dev_mode(GopherHandle* handle, int enable);
     

@@ -30,6 +30,8 @@ PYBIND11_MODULE(gopher_client, m) {
              py::arg("ip"), py::arg("port"))
         .def("end_call", &GopherClient::end_call)
         .def("is_in_call", &GopherClient::is_in_call)
+        .def("process_video_display", &GopherClient::process_video_display,
+             "Process video display - MUST be called from main thread on macOS")
         .def("get_name", &GopherClient::get_name)
         .def("get_ip", &GopherClient::get_ip)
         .def("get_port", &GopherClient::get_port)

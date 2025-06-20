@@ -287,7 +287,8 @@ GopherClient::GopherClient() :
     in_call_(false),
     dev_mode_(false),
     listening_socket_(-1),
-    listening_port_(0) {
+    listening_port_(0),
+    display_thread_should_stop_(false) {
 }
 
 GopherClient::~GopherClient() {
@@ -369,6 +370,10 @@ bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port
     }
     
     in_call_ = true;
+    display_thread_should_stop_ = false;
+    
+    // Store call target info for display window title
+    call_target_name_ = target_ip + ":" + std::to_string(target_port);
     
     // Start sender and receiver threads
     sender_thread_ = std::thread(&GopherClient::ffmpeg_sending_thread, this, target_ip, target_port);
@@ -383,6 +388,10 @@ void GopherClient::end_call() {
     if (!in_call_) return;
     
     in_call_ = false;
+    display_thread_should_stop_ = true;
+    
+    // Wake up display thread
+    display_cv.notify_all();
     
     if (sender_thread_.joinable()) {
         sender_thread_.join();
@@ -419,6 +428,101 @@ std::vector<Gopher> GopherClient::get_available_gophers() {
     return gophers;
 }
 
+void GopherClient::process_video_display() {
+    if (!in_call_) {
+        std::cout << "Not in call, skipping video display" << std::endl;
+        return;
+    }
+    
+    // Create window name
+    std::string window_name = "Gopher Call - " + call_target_name_;
+    
+    // Check if window exists, create if needed
+    static bool window_created = false;
+    if (!window_created) {
+        cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE);
+        window_created = true;
+        std::cout << "Created video window: " << window_name << std::endl;
+        
+        // Show initial placeholder
+        cv::Mat placeholder = cv::Mat::zeros(480, 640, CV_8UC3);
+        cv::putText(placeholder, "Connecting...", cv::Point(200, 240), 
+                   cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 2);
+        cv::imshow(window_name, placeholder);
+        cv::waitKey(1);
+    }
+    
+    // Process frames from the display queue
+    bool frame_displayed = false;
+    int frames_processed = 0;
+    
+    // Process multiple frames if available (catch up)
+    while (frames_processed < 5) { // Limit to prevent blocking
+        std::unique_lock<std::mutex> lock(display_mutex);
+        
+        if (display_queue.empty()) {
+            break; // No more frames available
+        }
+        
+        cv::Mat frame = display_queue.front();
+        display_queue.pop();
+        lock.unlock();
+        
+        if (!frame.empty()) {
+            try {
+                cv::imshow(window_name, frame);
+                frame_displayed = true;
+                frames_processed++;
+                
+                // Debug output occasionally
+                static int frame_count = 0;
+                frame_count++;
+                if (frame_count % 30 == 0) {
+                    std::cout << "Displayed frame " << frame_count << " (queue size was " 
+                              << display_queue.size() + 1 << ")" << std::endl;
+                }
+            } catch (const cv::Exception& e) {
+                std::cerr << "OpenCV error displaying frame: " << e.what() << std::endl;
+                break;
+            }
+        }
+    }
+    
+    // Always call waitKey to process window events
+    cv::waitKey(1);
+    
+    // Check if window still exists
+    try {
+        double visible = cv::getWindowProperty(window_name, cv::WND_PROP_VISIBLE);
+        if (visible < 1) {
+            std::cout << "Video window was closed" << std::endl;
+            end_call();
+            window_created = false;
+        }
+    } catch (const cv::Exception& e) {
+        // Window might have been destroyed
+        std::cout << "Video window no longer accessible" << std::endl;
+        window_created = false;
+    }
+    
+    // If we didn't display any frames, show a "waiting" message occasionally
+    if (!frame_displayed) {
+        static auto last_waiting_msg = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_waiting_msg);
+        
+        if (elapsed.count() >= 2) {
+            last_waiting_msg = now;
+            
+            // Show waiting message on screen
+            cv::Mat waiting_frame = cv::Mat::zeros(480, 640, CV_8UC3);
+            cv::putText(waiting_frame, "Waiting for video...", cv::Point(180, 240), 
+                       cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
+            cv::imshow(window_name, waiting_frame);
+            cv::waitKey(1);
+        }
+    }
+}
 
 std::string GopherClient::get_local_ip() {
     return ::get_local_ip();
@@ -458,6 +562,7 @@ void GopherClient::broadcast_loop() {
 }
 
 void GopherClient::listen_for_incoming_calls() {
+    // TODO: Implement actual incoming call listening logic
 }
 
 void GopherClient::ffmpeg_sending_thread(const std::string& ip, uint16_t port) {
