@@ -137,51 +137,7 @@ void signal_handler(int sig) {
 }
 
 int main(int argc, char* argv[]) {
-    signal(SIGTERM, signal_handler);
-    signal(SIGINT, signal_handler);
-    
-    pid_t parent_pid = -1;
-    if (argc > 1) {
-        parent_pid = static_cast<pid_t>(std::stoi(argv[1]));
-    }
-    
-    // Parent monitoring thread with proper error handling
-    std::thread monitor_thread([parent_pid]() {
-        while (running) {
-#ifdef _WIN32
-            if (parent_pid > 0) {
-                HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, parent_pid);
-                if (h == NULL) {
-                    std::cerr << "[gopherd] Parent process not found. Exiting.\n";
-                    running = 0;
-                    return;
-                }
-                
-                DWORD exit_code;
-                if (GetExitCodeProcess(h, &exit_code) && exit_code != STILL_ACTIVE) {
-                    std::cerr << "[gopherd] Parent process terminated. Exiting.\n";
-                    running = 0;
-                    CloseHandle(h);
-                    return;
-                }
-                CloseHandle(h);
-            }
-#else
-            if (parent_pid > 0) {
-                // Use kill(pid, 0) to check if process exists
-                if (kill(parent_pid, 0) == -1) {
-                    if (errno == ESRCH) {
-                        std::cerr << "[gopherd] Parent process terminated. Exiting.\n";
-                        running = 0;
-                        return;
-                    }
-                }
-            }
-#endif
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-        }
-    });
-    
+
     // Modified UDP listener with running flag
     auto udp_listener_safe = []() {
 #ifdef _WIN32
@@ -314,9 +270,6 @@ int main(int argc, char* argv[]) {
     
     std::thread udp_thread(udp_listener_safe);
     std::thread tcp_thread(tcp_server_safe);
-    
-    // Wait for shutdown signal
-    monitor_thread.join();
     
     // Clean shutdown
     running = 0;

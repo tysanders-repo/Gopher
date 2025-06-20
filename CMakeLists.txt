@@ -3,6 +3,15 @@ project(Gopher)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# FetchContent for pybind11 if not installed
+include(FetchContent)
+FetchContent_Declare(
+  pybind11
+  GIT_REPOSITORY https://github.com/pybind/pybind11.git
+  GIT_TAG v2.11.0
+)
+FetchContent_MakeAvailable(pybind11)
+
 # Find dependencies
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED
@@ -14,8 +23,7 @@ if(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS")
 endif()
 
-
-# Common includes and flags
+# Common include directories
 include_directories(
   ${FFMPEG_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
@@ -31,38 +39,45 @@ target_link_libraries(gopherd PRIVATE
   ${FFMPEG_LIBRARIES}
 )
 
-# === Gopher Client ===
-file(GLOB_RECURSE CLIENT_SRC
-    "src/gopher_client.cpp"
+# === Gopher Client Library ===
+file(GLOB_RECURSE CLIENT_LIB_SRC
+    "src/gopher_client_lib.cpp"
     "src/ffmpeg_sender.cpp"
     "src/ffmpeg_receiver.cpp"
 )
-add_executable(gopher_client ${CLIENT_SRC})
-target_link_libraries(gopher_client PRIVATE
+add_library(gopher_client_lib STATIC ${CLIENT_LIB_SRC})
+target_link_libraries(gopher_client_lib PUBLIC
   ${OpenCV_LIBRARIES}
   ${FFMPEG_LIBRARIES}
+)
+target_include_directories(gopher_client_lib PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+)
+
+# === Python Extension Module via pybind11 ===
+# Name the module 'gopher_client' so Python 'import gopher_client' works
+pybind11_add_module(gopher_client
+    src/gopher_client_pybind.cpp
+)
+target_link_libraries(gopher_client PRIVATE
+    gopher_client_lib
+)
+target_include_directories(gopher_client PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
 )
 
 # Optional macOS frameworks
 if(APPLE)
-  target_link_libraries(gopherd PRIVATE
-    "-framework AudioToolbox"
-    "-framework VideoToolbox"
-    "-framework CoreFoundation"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
-    "-framework CoreAudio"
-    "-lz"
-    "-liconv"
-  )
-  target_link_libraries(gopher_client PRIVATE
-    "-framework AudioToolbox"
-    "-framework VideoToolbox"
-    "-framework CoreFoundation"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
-    "-framework CoreAudio"
-    "-lz"
-    "-liconv"
-  )
+  foreach(target IN ITEMS gopherd gopher_client_lib gopher_client)
+    target_link_libraries(${target} PRIVATE
+      "-framework AudioToolbox"
+      "-framework VideoToolbox"
+      "-framework CoreFoundation"
+      "-framework CoreMedia"
+      "-framework CoreVideo"
+      "-framework CoreAudio"
+      "-lz"
+      "-liconv"
+    )
+  endforeach()
 endif()
