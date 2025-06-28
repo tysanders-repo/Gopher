@@ -23,8 +23,6 @@ PYBIND11_MODULE(gopher_client, m) {
         .def(py::init<>())
         .def("initialize", &GopherClient::initialize,
              py::arg("name"), py::arg("port"))
-        .def("start_broadcasting", &GopherClient::start_broadcasting)
-        .def("stop_broadcasting", &GopherClient::stop_broadcasting)
         .def("start_call", &GopherClient::start_call,
              py::arg("ip"), py::arg("port"))
         .def("end_call", &GopherClient::end_call)
@@ -35,6 +33,7 @@ PYBIND11_MODULE(gopher_client, m) {
         .def("get_ip", &GopherClient::get_ip)
         .def("get_port", &GopherClient::get_port)
         .def("enable_dev_mode", &GopherClient::enable_dev_mode)
+        .def("request_shutdown", &GopherClient::shutdown)
         // wrap the callback setter so Python lambdas work
         .def("set_incoming_call_callback",
              [](GopherClient &self, py::function cb){

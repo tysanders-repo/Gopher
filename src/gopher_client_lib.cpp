@@ -156,7 +156,6 @@ void ffmpeg_listener_thread(int existing_sock_fd, uint16_t listen_port) {
 // GopherClient class implementation
 GopherClient::GopherClient() :
     initialized_(false),
-    broadcasting_(false),
     in_call_(false),
     dev_mode_(false),
     listening_socket_(-1),
@@ -220,39 +219,29 @@ bool GopherClient::initialize(const std::string& name, uint16_t recv_port) {
     
     return true;
 }
-
 void GopherClient::shutdown() {
-    if (!initialized_) return;
     
-    stop_broadcasting();
-    end_call();
-    
-    initialized_ = false;
-    
-    if (listen_thread_.joinable()) {
-        listen_thread_.join();
-    }
-    
-    if (listening_socket_ >= 0) {
-        close(listening_socket_);
-        listening_socket_ = -1;
-    }
-}
+  display_thread_should_stop_ = true;
 
-void GopherClient::start_broadcasting() {
-    if (!initialized_ || broadcasting_) return;
-    
-    broadcasting_ = true;
-    broadcast_thread_ = std::thread(&GopherClient::broadcast_loop, this);
-}
+  display_cv.notify_all();
+  frame_cv.notify_all();
 
-void GopherClient::stop_broadcasting() {
-    if (!broadcasting_) return;
+  SDL_Event quit_e;
+  quit_e.type = SDL_QUIT;
+  SDL_PushEvent(&quit_e);
     
-    broadcasting_ = false;
-    if (broadcast_thread_.joinable()) {
-        broadcast_thread_.join();
-    }
+  end_call();
+  
+  initialized_ = false;
+  
+  if (listen_thread_.joinable()) {
+      listen_thread_.join();
+  }
+  
+  if (listening_socket_ >= 0) {
+      close(listening_socket_);
+      listening_socket_ = -1;
+  }
 }
 
 bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port) {
@@ -379,35 +368,6 @@ void GopherClient::process_video_display() {
 
 std::string GopherClient::get_local_ip() {
     return ::get_local_ip();
-}
-
-void GopherClient::broadcast_loop() {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) return;
-    
-    int broadcast_enable = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
-        close(sock);
-        return;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(43753);
-    addr.sin_addr.s_addr = inet_addr("255.255.255.255");
-
-    std::string message = "name:" + gopher_name_ + ";ip:" + local_ip_ + ";port:" + std::to_string(listening_port_) + ";";
-
-    while(broadcasting_) {
-        if (sendto(sock, message.c_str(), message.size(), 0, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            if (dev_mode_) {
-                std::cerr << "Broadcast failed" << std::endl;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-    }
-    
-    close(sock);
 }
 
 //TODO

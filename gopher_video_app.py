@@ -33,7 +33,7 @@ class GopherVideoApp:
         self.video_display_thread = None
 
         # Set up signal handlers for clean shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler) #ctrl-c
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
@@ -181,15 +181,6 @@ class GopherVideoApp:
         print("Shutting down video app...")
         self.running = False
         self.call_active = False
-
-        # Destroy all OpenCV windows first
-        try:
-            cv2.destroyAllWindows()
-            # Give OpenCV time to clean up
-            for _ in range(5):
-                cv2.waitKey(1)
-        except:
-            pass
 
         if self.client:
             try:

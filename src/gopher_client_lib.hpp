@@ -22,10 +22,6 @@ public:
     bool initialize(const std::string& name, uint16_t listening_port = 0);
     void shutdown();
     
-    // Broadcasting
-    void start_broadcasting();
-    void stop_broadcasting();
-    
     // Call management
     bool start_call(const std::string& target_ip, uint16_t target_port);
     void end_call();
@@ -48,6 +44,8 @@ public:
     // Dev/Testing
     void enable_dev_mode(bool enable) { dev_mode_ = enable; }
 
+
+
 private:
     std::string gopher_name_;
     std::string local_ip_;
@@ -55,13 +53,11 @@ private:
     std::string call_target_name_;
     
     std::atomic<bool> initialized_;
-    std::atomic<bool> broadcasting_;
     std::atomic<bool> in_call_;
     std::atomic<bool> display_thread_should_stop_;
     bool dev_mode_;
     
     int listening_socket_;
-    std::thread broadcast_thread_;
     std::thread sender_thread_;
     std::thread receiver_thread_;
     std::thread listen_thread_;
@@ -71,7 +67,6 @@ private:
     // Helper methods
     std::string get_local_ip();
     bool create_listening_socket(uint16_t& out_port);
-    void broadcast_loop();
     int listen_for_incoming_calls();
     void ffmpeg_sending_thread(const std::string& ip, uint16_t port);
     void ffmpeg_listener_thread();
@@ -92,9 +87,6 @@ extern "C" {
     
     int gopher_initialize(GopherHandle* handle, const char* name, uint16_t port);
     void gopher_shutdown(GopherHandle* handle);
-    
-    void gopher_start_broadcasting(GopherHandle* handle);
-    void gopher_stop_broadcasting(GopherHandle* handle);
     
     int gopher_start_call(GopherHandle* handle, const char* ip, uint16_t port);
     void gopher_end_call(GopherHandle* handle);
