@@ -22,10 +22,9 @@ PYBIND11_MODULE(gopher_client, m) {
     py::class_<GopherClient>(m, "GopherClient")
         .def(py::init<>())
         .def("initialize", &GopherClient::initialize,
-             py::arg("name"), py::arg("port") = 0)
+             py::arg("name"), py::arg("port"))
         .def("start_broadcasting", &GopherClient::start_broadcasting)
         .def("stop_broadcasting", &GopherClient::stop_broadcasting)
-        .def("get_available_gophers", &GopherClient::get_available_gophers)
         .def("start_call", &GopherClient::start_call,
              py::arg("ip"), py::arg("port"))
         .def("end_call", &GopherClient::end_call)

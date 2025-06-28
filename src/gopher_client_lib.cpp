@@ -17,13 +17,14 @@
 
 //video specific includes
 #include <opencv2/opencv.hpp>
+#include <SDL2/SDL.h>
 
 // Fix for macOS Block.h issue - include this before FFmpeg headers
-#ifdef __APPLE__
-#define __STDC_CONSTANT_MACROS
-#define __STDC_FORMAT_MACROS
-#define __STDC_LIMIT_MACROS
-#endif
+// #ifdef __APPLE__
+// #define __STDC_CONSTANT_MACROS
+// #define __STDC_FORMAT_MACROS
+// #define __STDC_LIMIT_MACROS
+// #endif
 
 extern "C" {
 #include <libavdevice/avdevice.h>
@@ -43,6 +44,10 @@ extern "C" {
 #include <VideoToolbox/VideoToolbox.h>
 #endif
 
+#define RED "\033[31m"
+#define GREEN "\033[32m"
+#define RESET "\033[0m"
+
 // Declare external variables from ffmpeg_sender.cpp
 extern std::queue<cv::Mat> display_queue;
 extern std::mutex display_mutex;
@@ -53,8 +58,7 @@ std::string gopher_name;
 uint16_t listening_port;
 std::vector<std::thread> threads;
 std::mutex gopher_mutex;
-
-std::queue<cv::Mat> frame_queue;
+std::queue<AVFrame*> frame_queue;
 std::mutex frame_mutex;
 std::condition_variable frame_cv;
 pid_t gopherd_pid = -1;
@@ -93,110 +97,41 @@ std::string get_local_ip() {
     return ip;
 }
 
-char getch() {
-    termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO); // disable buffering and echo
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+bool GopherClient::create_listening_socket(uint16_t& out_port) {
+      listening_socket_ = socket(AF_INET, SOCK_DGRAM, 0); //inital creation of the socket that should match the broadcasted port
+      if (listening_socket_ < 0) return -1;
+      
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(out_port); // use the port we're sharing over the broadcast
+      addr.sin_addr.s_addr = INADDR_ANY;
 
-    char ch = getchar();
+      if (bind(listening_socket_, (struct sockaddr*)&addr, sizeof(addr)) < 0) { 
+          close(listening_socket_);
+          return false;
+      }
 
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    return ch;
-}
+      socklen_t len = sizeof(addr);
+      if (getsockname(listening_socket_, (struct sockaddr*)&addr, &len) < 0) {
+          close(listening_socket_);
+          return false;
+      }
 
-int broadcast() {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) return -1;
-    
-    int broadcast_enable = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
-        close(sock);
-        return -1;
-    }
+      //if the out_port is given 0, we should set our member var out_port to the port the system assigned
+      if (out_port == 0) {
+          out_port = ntohs(addr.sin_port);
+      }
+      
+      // enforce the port to be the one we broadcasted
+      if (out_port != ntohs(addr.sin_port)) {
+          std::cerr << RED << "Listening socket port mismatch: expected " << out_port 
+                    << ", got " << ntohs(addr.sin_port) << RESET << std::endl;
+          close(listening_socket_);
+          return false;
+      } 
 
-    sockaddr_in addr{}; 
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(43753);
-    addr.sin_addr.s_addr = inet_addr("255.255.255.255");
-
-    std::string message = "name:" + gopher_name + ";ip:" + get_local_ip() + ";port:" + std::to_string(listening_port) + ";";
-
-    while(true) {
-        if (sendto(sock, message.c_str(), message.size(), 0, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            std::cerr << "Broadcast failed" << std::endl;
-        }
-        sleep(5);
-    }
-    
-    close(sock);
-    return 0;
-}
-
-std::vector<Gopher> query_daemon_for_gophers() {
-    std::vector<Gopher> result;
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return result;
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(DAEMON_PORT);
-    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
-        close(sock);
-        return result;
-    }
-
-    if (connect(sock, (sockaddr*)&addr, sizeof(addr)) == 0) {
-        char buffer[2048];
-        int n = read(sock, buffer, sizeof(buffer) - 1);
-        if (n > 0) {
-            buffer[n] = '\0';
-
-            std::istringstream iss(buffer);
-            std::string line;
-            while (std::getline(iss, line)) {
-                std::istringstream ls(line);
-                std::string name, ip, port_str;
-                if (std::getline(ls, name, ',') &&
-                    std::getline(ls, ip, ',') &&
-                    std::getline(ls, port_str)) {
-                    try {
-                        result.push_back(Gopher{name, ip, static_cast<uint16_t>(std::stoi(port_str))});
-                    } catch (const std::exception& e) {
-                        std::cerr << "Error parsing gopher data: " << e.what() << std::endl;
-                    }
-                }
-            }
-        }
-    }
-    close(sock);
-    return result;
-}
-
-int create_listening_socket(uint16_t& out_port) {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) return -1;
-    
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(0); //let OS choose
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        close(sock);
-        return -1;
-    }
-
-    socklen_t len = sizeof(addr);
-    if (getsockname(sock, (struct sockaddr*)&addr, &len) < 0) {
-        close(sock);
-        return -1;
-    }
-    
-    out_port = ntohs(addr.sin_port);
-    return sock;
-}
+      return true;
+  }
 
 void ffmpeg_sending_thread(const std::string& ip, uint16_t port) {
     FFmpegSender sender;
@@ -218,68 +153,6 @@ void ffmpeg_listener_thread(int existing_sock_fd, uint16_t listen_port) {
     }
 }
 
-void setup_hardware_acceleration() {
-    // For macOS - enable hardware acceleration
-    #ifdef __APPLE__
-    setenv("OPENCV_AVFOUNDATION_USE_NATIVE_CAPTURE", "1", 1);
-    #endif
-    
-    // For Linux - enable V4L2 hardware acceleration
-    #ifdef __linux__
-    setenv("OPENCV_VIDEOIO_PRIORITY_V4L2", "1", 1);
-    #endif
-}
-
-int direct_call_mode(const std::string& name, const std::string& ip, uint16_t port) {
-    ensure_daemon_running("./gopherd");
-    setup_hardware_acceleration();
-    
-    int listening_socket = create_listening_socket(listening_port);
-    if (listening_socket < 0) {
-        std::cerr << "Failed to create listening socket" << std::endl;
-        return -1;
-    }
-    
-    std::cout << "Calling " << name << " at " << ip << ":" << port << std::endl;
-    std::cout << "Press ESC to end call..." << std::endl;
-    
-    // Start the call
-    std::thread sender_thread(ffmpeg_sending_thread, ip, port);
-    std::thread receiver_thread(ffmpeg_listener_thread, listening_socket, listening_port);
-    
-    // Display received video
-    cv::namedWindow("Call with " + name, cv::WINDOW_AUTOSIZE);
-    
-    while (true) {
-        std::unique_lock<std::mutex> lock(display_mutex);
-        display_cv.wait_for(lock, std::chrono::milliseconds(100), 
-                           [] { return !display_queue.empty(); });
-        
-        if (!display_queue.empty()) {
-            cv::Mat frame = display_queue.front();
-            display_queue.pop();
-            lock.unlock();
-            
-            cv::imshow("Call with " + name, frame);
-        }
-        
-        // Check for ESC key to end call
-        int key = cv::waitKey(1);
-        if (key == 27) { // ESC key
-            std::cout << "Ending call..." << std::endl;
-            break;
-        }
-    }
-    
-    cv::destroyAllWindows();
-    
-    // Clean up threads
-    sender_thread.detach();
-    receiver_thread.detach();
-    
-    return 0;
-}
-
 // GopherClient class implementation
 GopherClient::GopherClient() :
     initialized_(false),
@@ -295,27 +168,55 @@ GopherClient::~GopherClient() {
     shutdown();
 }
 
-bool GopherClient::initialize(const std::string& name, uint16_t port) {
+bool GopherClient::initialize(const std::string& name, uint16_t recv_port) {
     if (initialized_) {
-        return false; // Already initialized
+        return false;
     }
     
     gopher_name_ = name;
     local_ip_ = get_local_ip();
     
-    // Create listening socket
-    uint16_t actual_port = port;
-    listening_socket_ = create_listening_socket(actual_port);
-    if (listening_socket_ < 0) {
-        std::cerr << "Failed to create listening socket" << std::endl;
+    // Create listening socket on the port we've been given
+    int success = create_listening_socket(recv_port);
+    if (success < 0) {
+        std::cerr << RED << "Failed to create listening socket" << RESET << std::endl;
         return false;
     }
+
+    listening_port_ = recv_port;
+
+    if (dev_mode_){
+      sockaddr_in addr{};
+      socklen_t len = sizeof(addr);
+
+      getsockname(listening_socket_, (struct sockaddr*)&addr, &len);
+      uint16_t dev_port = ntohs(addr.sin_port);
+
+      std::cout << GREEN << "Initialized CPP backend gopherclient with:" <<
+                    " name: " << gopher_name_ << "\n" <<
+                    " local IP: " << local_ip_ << "\n" <<
+                    " listening port: " << recv_port << "\n" <<
+
+                    "\n\n" <<
+
+                    "datum should match port used:" <<
+                     RESET <<
+
+                    RED << "recv == created port: " << (recv_port == dev_port) << RESET << std::endl;
     
-    listening_port_ = actual_port;
+
+      if (recv_port != dev_port) {
+          std::cerr << RED << "Listening port mismatch: expected " << recv_port 
+                    << ", got " << dev_port << RESET << std::endl;
+          close(listening_socket_);
+          listening_socket_ = -1;
+          return false;
+      }
+
+    }
+
+    
     initialized_ = true;
-    
-    // Start listening for incoming calls
-    listen_thread_ = std::thread(&GopherClient::listen_for_incoming_calls, this);
     
     return true;
 }
@@ -356,18 +257,6 @@ void GopherClient::stop_broadcasting() {
 
 bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port) {
     if (!initialized_ || in_call_) return false;
-    
-    // Check if we're trying to call ourselves
-    bool calling_self = (target_ip == local_ip_ && target_port == listening_port_);
-    
-    if (calling_self && !dev_mode_) {
-        std::cerr << "Cannot call yourself unless dev mode is enabled" << std::endl;
-        return false;
-    }
-    
-    if (calling_self && dev_mode_) {
-        std::cout << "Dev mode: Starting self-call (loopback test)" << std::endl;
-    }
     
     in_call_ = true;
     display_thread_should_stop_ = false;
@@ -412,124 +301,84 @@ void GopherClient::set_incoming_call_callback(std::function<bool(const std::stri
     incoming_call_callback_ = callback;
 }
 
-std::vector<Gopher> GopherClient::get_available_gophers() {
-    std::lock_guard<std::mutex> lock(gopher_mutex);
-    std::vector<Gopher> gophers = query_daemon_for_gophers();
-    
-    // In dev mode, add ourselves to the list for testing
-    if (dev_mode_ && initialized_) {
-        Gopher self_gopher;
-        self_gopher.name = gopher_name_ + " (self)";
-        self_gopher.ip = local_ip_;
-        self_gopher.port = listening_port_;
-        gophers.insert(gophers.begin(), self_gopher); // Add at the beginning
-    }
-    
-    return gophers;
-}
+int video_width = 640; // Default video width
+int video_height = 480; // Default video height
 
 void GopherClient::process_video_display() {
-    if (!in_call_) {
-        std::cout << "Not in call, skipping video display" << std::endl;
-        return;
-    }
-    
-    // Create window name
-    std::string window_name = "Gopher Call - " + call_target_name_;
-    
-    // Check if window exists, create if needed
-    static bool window_created = false;
-    if (!window_created) {
-        cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE);
-        window_created = true;
-        std::cout << "Created video window: " << window_name << std::endl;
-        
-        // Show initial placeholder
-        cv::Mat placeholder = cv::Mat::zeros(480, 640, CV_8UC3);
-        cv::putText(placeholder, "Connecting...", cv::Point(200, 240), 
-                   cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(255, 255, 255), 2);
-        cv::imshow(window_name, placeholder);
-        cv::waitKey(1);
-    }
-    
-    // Process frames from the display queue
-    bool frame_displayed = false;
-    int frames_processed = 0;
-    
-    // Process multiple frames if available (catch up)
-    while (frames_processed < 5) { // Limit to prevent blocking
-        std::unique_lock<std::mutex> lock(display_mutex);
-        
-        if (display_queue.empty()) {
-            break; // No more frames available
-        }
-        
-        cv::Mat frame = display_queue.front();
-        display_queue.pop();
-        lock.unlock();
-        
-        if (!frame.empty()) {
-            try {
-                cv::imshow(window_name, frame);
-                frame_displayed = true;
-                frames_processed++;
-                
-                // Debug output occasionally
-                static int frame_count = 0;
-                frame_count++;
-                if (frame_count % 30 == 0) {
-                    std::cout << "Displayed frame " << frame_count << " (queue size was " 
-                              << display_queue.size() + 1 << ")" << std::endl;
-                }
-            } catch (const cv::Exception& e) {
-                std::cerr << "OpenCV error displaying frame: " << e.what() << std::endl;
+    if (!in_call_) return;
+
+    // Initialize SDL video subsystem
+    SDL_Init(SDL_INIT_VIDEO);
+
+    // Create window and renderer
+    SDL_Window* window = SDL_CreateWindow(
+        ("Call: " + call_target_name_).c_str(),
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        video_width, video_height, 0
+    );
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+
+    // Create a YUV420P streaming texture
+    SDL_Texture* texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_IYUV,
+        SDL_TEXTUREACCESS_STREAMING,
+        video_width, video_height
+    );
+
+    bool running = true;
+    while (running) {
+        // Handle SDL events
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                running = false;
                 break;
             }
         }
-    }
-    
-    // Always call waitKey to process window events
-    cv::waitKey(1);
-    
-    // Check if window still exists
-    try {
-        double visible = cv::getWindowProperty(window_name, cv::WND_PROP_VISIBLE);
-        if (visible < 1) {
-            std::cout << "Video window was closed" << std::endl;
-            end_call();
-            window_created = false;
+
+        // Pop next frame from queue if available
+        AVFrame* frame = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(display_mutex);
+            if (!frame_queue.empty()) {
+                frame = frame_queue.front();
+                frame_queue.pop();
+            }
         }
-    } catch (const cv::Exception& e) {
-        // Window might have been destroyed
-        std::cout << "Video window no longer accessible" << std::endl;
-        window_created = false;
-    }
-    
-    // If we didn't display any frames, show a "waiting" message occasionally
-    if (!frame_displayed) {
-        static auto last_waiting_msg = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_waiting_msg);
-        
-        if (elapsed.count() >= 2) {
-            last_waiting_msg = now;
-            
-            // Show waiting message on screen
-            cv::Mat waiting_frame = cv::Mat::zeros(480, 640, CV_8UC3);
-            cv::putText(waiting_frame, "Waiting for video...", cv::Point(180, 240), 
-                       cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
-            cv::imshow(window_name, waiting_frame);
-            cv::waitKey(1);
+
+        if (!frame) {
+            // No frame ready; small sleep to avoid busy loop
+            SDL_Delay(10);
+            continue;
         }
+
+        // Upload YUV planes into texture
+        SDL_UpdateYUVTexture(
+            texture, nullptr,
+            frame->data[0], frame->linesize[0],
+            frame->data[1], frame->linesize[1],
+            frame->data[2], frame->linesize[2]
+        );
+
+        // Render the texture
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+
+        // Free the frame now that it's displayed
+        av_frame_free(&frame);
     }
+
+    // Cleanup SDL
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 }
 
 std::string GopherClient::get_local_ip() {
     return ::get_local_ip();
-}
-
-int GopherClient::create_listening_socket(uint16_t& out_port) {
-    return ::create_listening_socket(out_port);
 }
 
 void GopherClient::broadcast_loop() {
@@ -561,8 +410,9 @@ void GopherClient::broadcast_loop() {
     close(sock);
 }
 
-void GopherClient::listen_for_incoming_calls() {
-    // TODO: Implement actual incoming call listening logic
+//TODO
+int GopherClient::listen_for_incoming_calls() {
+    return 0;
 }
 
 void GopherClient::ffmpeg_sending_thread(const std::string& ip, uint16_t port) {

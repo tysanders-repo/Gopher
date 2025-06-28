@@ -70,11 +70,12 @@ private:
     
     // Helper methods
     std::string get_local_ip();
-    int create_listening_socket(uint16_t& out_port);
+    bool create_listening_socket(uint16_t& out_port);
     void broadcast_loop();
-    void listen_for_incoming_calls();
+    int listen_for_incoming_calls();
     void ffmpeg_sending_thread(const std::string& ip, uint16_t port);
     void ffmpeg_listener_thread();
+
     
     // Protocol handling
     void handle_incoming_call_request(const std::string& caller_name, 

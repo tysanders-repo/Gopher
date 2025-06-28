@@ -17,16 +17,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED
   libavdevice libavformat libavcodec libavutil libswscale libswresample
 )
+find_package(SDL2 REQUIRED)
 find_package(OpenCV REQUIRED)
 
 if(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS")
 endif()
 
-# Common include directories
+
 include_directories(
   ${FFMPEG_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${SDL2_INCLUDE_DIRS}
   ${CMAKE_SOURCE_DIR}/src
 )
 link_directories(${FFMPEG_LIBRARY_DIRS})
@@ -47,8 +49,9 @@ file(GLOB_RECURSE CLIENT_LIB_SRC
 )
 add_library(gopher_client_lib STATIC ${CLIENT_LIB_SRC})
 target_link_libraries(gopher_client_lib PUBLIC
-  ${OpenCV_LIBRARIES}
   ${FFMPEG_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${SDL2_LIBRARIES}
 )
 target_include_directories(gopher_client_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/src

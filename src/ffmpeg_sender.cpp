@@ -1,4 +1,5 @@
 #include "ffmpeg_sender.hpp"
+#include <thread>
 
 // Packet structure for network transmission
 struct VideoPacket {
@@ -22,8 +23,15 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     dest_addr.sin_port = htons(dest_port);
     inet_pton(AF_INET, dest_ip.c_str(), &dest_addr.sin_addr);
     
-    // Open camera input (macOS avfoundation)
-    const AVInputFormat* input_fmt = av_find_input_format("avfoundation");
+        // Find input format for video device (e.g., "avfoundation" on macOS, "v4l2" on Linux)
+    #if defined(__APPLE__)
+        const AVInputFormat* input_fmt = av_find_input_format("avfoundation");
+    #elif defined(_WIN32)
+        const AVInputFormat* input_fmt = av_find_input_format("dshow");
+    #else
+        const AVInputFormat* input_fmt = av_find_input_format("v4l2");
+    #endif
+    
     AVDictionary* options = nullptr;
     av_dict_set(&options, "video_size", "1280x720", 0);
     av_dict_set(&options, "framerate", "30", 0);
@@ -62,6 +70,7 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
         std::cout << "Using hardware encoder (VideoToolbox)" << std::endl;
     }
     
+    //encoder parameters
     encoder_ctx = avcodec_alloc_context3(encoder);
     encoder_ctx->width = 1280;
     encoder_ctx->height = 720;
@@ -80,6 +89,8 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     } else {
         av_dict_set(&enc_opts, "preset", "ultrafast", 0);
         av_dict_set(&enc_opts, "tune", "zerolatency", 0);
+        av_dict_set(&enc_opts, "rc-lookahead", "0", 0);
+        av_dict_set(&enc_opts, "bf", "0", 0);
     }
     
     if (avcodec_open2(encoder_ctx, encoder, &enc_opts) < 0) {
@@ -92,14 +103,26 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     sws_ctx = sws_getContext(
         par->width, par->height, (AVPixelFormat)par->format,
         1280, 720, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, nullptr, nullptr, nullptr
+        SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
     );
     
     return true;
 }
 
 void FFmpegSender::run() {
+    // Adaptive throttling - starts conservative and adjusts
+    const double base_fps = 30.0;
+    double current_fps = base_fps;
+    auto frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
+    
+    // Performance monitoring
+    auto last_stats_time = std::chrono::steady_clock::now();
+    int frames_sent = 0;
+    int dropped_frames = 0;
+    
+    // Existing allocations
     AVPacket* input_pkt = av_packet_alloc();
+    AVPacket* output_pkt = av_packet_alloc();
     AVFrame* raw_frame = av_frame_alloc();
     AVFrame* yuv_frame = av_frame_alloc();
     
@@ -116,60 +139,136 @@ void FFmpegSender::run() {
     avcodec_open2(decoder_ctx, decoder, nullptr);
     
     int64_t frame_count = 0;
+    auto last_frame_time = std::chrono::steady_clock::now();
     
-    // while (av_read_frame(input_ctx, input_pkt) >= 0) {
     while (true) {
-      while (av_read_frame(input_ctx, input_pkt) >= 0) {
+        auto loop_start = std::chrono::steady_clock::now();
+        bool frame_processed = false;
+        
+        // Try to read and process a frame
+        int ret = av_read_frame(input_ctx, input_pkt);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                // End of file - for live streams, you might want to reconnect
+                break;
+            }
+            // Other errors - short sleep and continue
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        
         if (input_pkt->stream_index == video_stream_idx) {
-            // Decode input frame
-            if (avcodec_send_packet(decoder_ctx, input_pkt) >= 0) {
-                while (avcodec_receive_frame(decoder_ctx, raw_frame) >= 0) {
-                    // Convert to YUV420P for encoder
-                    sws_scale(sws_ctx, 
-                            raw_frame->data, raw_frame->linesize, 0, raw_frame->height,
-                            yuv_frame->data, yuv_frame->linesize);
+            ret = avcodec_send_packet(decoder_ctx, input_pkt);
+            if (ret >= 0) {
+                ret = avcodec_receive_frame(decoder_ctx, raw_frame);
+                if (ret >= 0) {
+                    // Check if we should process this frame (drop frames if behind)
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto time_since_last = current_time - last_frame_time;
                     
-                    yuv_frame->pts = frame_count++;
-                    
-                    // Encode frame
-                    if (avcodec_send_frame(encoder_ctx, yuv_frame) >= 0) {
-                        AVPacket* enc_pkt = av_packet_alloc();
-                        while (avcodec_receive_packet(encoder_ctx, enc_pkt) >= 0) {
-                            sendPacket(enc_pkt, 1); // type 1 = video
-                            av_packet_unref(enc_pkt);
+                    if (time_since_last >= frame_duration * 0.8) { // Process if 80% of frame time has passed
+                        // Convert to YUV420P for encoder
+                        sws_scale(sws_ctx,
+                                 raw_frame->data, raw_frame->linesize, 0, raw_frame->height,
+                                 yuv_frame->data, yuv_frame->linesize);
+                        
+                        yuv_frame->pts = frame_count++;
+                        
+                        // Encode frame
+                        ret = avcodec_send_frame(encoder_ctx, yuv_frame);
+                        if (ret >= 0) {
+                            while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
+                                sendPacket(output_pkt, 1);
+                                av_packet_unref(output_pkt);
+                            }
                         }
-                        av_packet_free(&enc_pkt);
+                        
+                        last_frame_time = current_time;
+                        frame_processed = true;
+                        frames_sent++;
+                    } else {
+                        // Drop this frame to catch up
+                        dropped_frames++;
                     }
                 }
             }
         }
+        
         av_packet_unref(input_pkt);
+        
+        // Adaptive throttling based on performance
+        if (frame_processed) {
+            auto processing_time = std::chrono::steady_clock::now() - loop_start;
+            auto remaining_time = frame_duration - processing_time;
+            
+            if (remaining_time > std::chrono::microseconds(0) && 
+                remaining_time < std::chrono::milliseconds(50)) { // Max 50ms sleep
+                std::this_thread::sleep_for(remaining_time);
+            }
+        }
+        
+        // Adjust frame rate every second based on performance
+        auto current_time = std::chrono::steady_clock::now();
+        if (current_time - last_stats_time >= std::chrono::seconds(1)) {
+            double drop_rate = static_cast<double>(dropped_frames) / (frames_sent + dropped_frames);
+            
+            if (drop_rate > 0.1) { // If more than 10% frames dropped, reduce FPS
+                current_fps = std::max(15.0, current_fps * 0.9);
+                frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
+                printf("Adapted FPS to %.1f (drop rate: %.1f%%)\n", current_fps, drop_rate * 100);
+            } else if (drop_rate < 0.02 && current_fps < base_fps) {
+                current_fps = std::min(base_fps, current_fps * 1.05);
+                frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
+            }
+            
+            // Reset counters
+            frames_sent = 0;
+            dropped_frames = 0;
+            last_stats_time = current_time;
+        }
     }
-  }
+    
+    // Flush the encoder
+    avcodec_send_frame(encoder_ctx, nullptr);
+    while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
+        sendPacket(output_pkt, 1);
+        av_packet_unref(output_pkt);
+    }
     
     // Cleanup
     avcodec_free_context(&decoder_ctx);
     av_frame_free(&raw_frame);
     av_frame_free(&yuv_frame);
     av_packet_free(&input_pkt);
+    av_packet_free(&output_pkt);
 }
 
 void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type) {
+
+    auto now = std::chrono::steady_clock::now();
+    uint64_t ts_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    uint64_t net_ts = htonll(ts_us);
+
+    uint32_t payload_len = pkt->size;
+    uint32_t total_size = payload_len + 1 + sizeof(net_ts);
+    uint32_t net_size = htonl(total_size);
+
     // Send packet size + type header
-    uint32_t total_size = htonl(pkt->size + 1);
-    sendto(sock, &total_size, sizeof(total_size), 0, 
+    sendto(sock, &net_size, sizeof(net_size), 0,
            (sockaddr*)&dest_addr, sizeof(dest_addr));
-    sendto(sock, &type, 1, 0, 
+    sendto(sock, &type, sizeof(type), 0,
+           (sockaddr*)&dest_addr, sizeof(dest_addr));
+    sendto(sock, &net_ts, sizeof(net_ts), 0,
            (sockaddr*)&dest_addr, sizeof(dest_addr));
     
     // Send packet data in chunks to avoid UDP size limits
     const size_t MAX_CHUNK = 1400;
-    size_t offset = 0;
-    while (offset < pkt->size) {
-        size_t chunk_size = std::min(MAX_CHUNK, (size_t)(pkt->size - offset));
-        sendto(sock, pkt->data + offset, chunk_size, 0,
+    size_t sent = 0;
+    while (sent < payload_len) {
+        size_t chunk = std::min(MAX_CHUNK, (size_t)(payload_len - sent));
+        sendto(sock, pkt->data + sent, chunk, 0,
                (sockaddr*)&dest_addr, sizeof(dest_addr));
-        offset += chunk_size;
+        sent += chunk;
     }
 }
 
@@ -178,23 +277,4 @@ FFmpegSender::~FFmpegSender() {
     if (encoder_ctx) avcodec_free_context(&encoder_ctx);
     if (input_ctx) avformat_close_input(&input_ctx);
     if (sock >= 0) close(sock);
-}
-
-// Display thread function
-void displayThread() {
-    cv::namedWindow("Received Video", cv::WINDOW_AUTOSIZE);
-    
-    while (true) {
-        std::unique_lock<std::mutex> lock(display_mutex);
-        display_cv.wait(lock, [] { return !display_queue.empty(); });
-        
-        cv::Mat frame = display_queue.front();
-        display_queue.pop();
-        lock.unlock();
-        
-        cv::imshow("Received Video", frame);
-        if (cv::waitKey(1) == 27) break; // ESC to exit
-    }
-    
-    cv::destroyAllWindows();
 }
