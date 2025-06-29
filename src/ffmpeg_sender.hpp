@@ -40,9 +40,7 @@ public:
 };
 
 // External display variables
-extern std::queue<cv::Mat> display_queue; //!remove
 extern std::mutex display_mutex;
-// extern std::condition_variable display_cv; //!remove
 extern std::atomic<bool> send_thread_should_stop_;
 
 // Display thread function

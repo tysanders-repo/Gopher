@@ -1,25 +1,29 @@
 #include "ffmpeg_receiver.hpp"
 
-// External declarations - these are defined in ffmpeg_sender.cpp
 extern std::queue<AVFrame*> frame_queue;
 extern std::mutex display_mutex;
-// extern std::condition_variable display_cv; //!remove
 
-bool FFmpegReceiver::initialize(int advertised_socket_, uint16_t listen_port) {
+
+bool FFmpegReceiver::initialize(int socket_fd, uint16_t listen_port) {
     // Setup decoder
     const AVCodec* decoder = avcodec_find_decoder(AV_CODEC_ID_H264);
-    decoder_ctx = avcodec_alloc_context3(decoder);
-    
+               decoder_ctx = avcodec_alloc_context3(decoder);
+
+    if (!decoder || !decoder_ctx) {
+        std::cerr << "Failed to find or allocate decoder" << std::endl;
+        return false;
+    }
+
     if (avcodec_open2(decoder_ctx, decoder, nullptr) < 0) {
         std::cerr << "Failed to open decoder" << std::endl;
         return false;
     }
     
     // Take control of the existing socket
-    sock = advertised_socket_;
+    sock = socket_fd;
 
     //set sock to be non-blocking
-    struct timeval tv{.tv_sec=0, .tv_usec=100000}; // 100 ms
+    struct timeval tv{.tv_sec=0, .tv_usec=50000};
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     return true;
@@ -90,23 +94,21 @@ int MAX_QUEUE_FRAMES = 10; // Maximum frames to keep in queue
 void FFmpegReceiver::processVideoPacket(const std::vector<uint8_t>& data) {
     // 1) wrap incoming bytes in an AVPacket
     AVPacket* pkt = av_packet_alloc();
-    pkt->data = const_cast<uint8_t*>(data.data());
+    pkt->data = static_cast<uint8_t*>(av_malloc(data.size()));
+    memcpy(pkt->data, data.data(), data.size());
     pkt->size = data.size();
 
     if (avcodec_send_packet(decoder_ctx, pkt) >= 0) {
         AVFrame* raw = av_frame_alloc();
         while (avcodec_receive_frame(decoder_ctx, raw) >= 0) {
-            // 2) clone frame (deep copy) so we own the data
             AVFrame* frame = av_frame_clone(raw);
 
-            // 3) push into our thread-safe queue, dropping oldest if full
             std::lock_guard<std::mutex> lock(display_mutex);
             if (frame_queue.size() > MAX_QUEUE_FRAMES) {
                 av_frame_free(&frame_queue.front());
                 frame_queue.pop();
             }
             frame_queue.push(frame);
-            // display_cv.notify_one();//!remove
         }
         av_frame_free(&raw);
     }

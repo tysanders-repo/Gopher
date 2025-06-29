@@ -8,23 +8,21 @@ struct VideoPacket {
     std::vector<uint8_t> data;
 };
 
-// Global frame queue for display - make sure these are properly defined
-//! remove
-// std::queue<cv::Mat> display_queue;
 std::mutex display_mutex;
-// std::condition_variable display_cv;
+
+// global video display vars
+extern int video_width;
+extern int video_height;
 
 bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
-    // Initialize FFmpeg
     avdevice_register_all();
     
-    // Setup network
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(dest_port);
     inet_pton(AF_INET, dest_ip.c_str(), &dest_addr.sin_addr);
     
-        // Find input format for video device (e.g., "avfoundation" on macOS, "v4l2" on Linux)
+    // Find input format for hardware camera
     #if defined(__APPLE__)
         const AVInputFormat* input_fmt = av_find_input_format("avfoundation");
     #elif defined(_WIN32)
