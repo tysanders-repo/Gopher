@@ -33,7 +33,7 @@ class GopherVideoApp:
         self.video_display_thread = None
 
         # Set up signal handlers for clean shutdown
-        signal.signal(signal.SIGINT, self._signal_handler) #ctrl-c
+        signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
@@ -90,108 +90,58 @@ class GopherVideoApp:
             return False
 
     def run_video_display(self):
-        """Main video display loop - MUST run in main thread on macOS"""
-        if not self.call_active:
-            print("No active call to display")
-            return False
+      """Main video display loop - MUST run in main thread on macOS"""
+      if not self.call_active:
+          print("No active call to display")
+          return False
 
-        print("Starting video display...")
-        print("Press ESC or Q to end call, or close the window")
+      print("Starting video display...")
+      print("Press ESC or Q to end call, or close the window")
 
-        # Give the call a moment to establish
-        print("Waiting for call to establish...")
-        time.sleep(3)
+      # Give the call a moment to establish
+      print("Waiting for call to establish...")
+      time.sleep(3)
 
-        frame_count = 0
-        last_status_time = time.time()
-        video_started = False
+      try:
+          print("Entering main video loop...")
 
-        try:
-            print("Entering main video loop...")
+          # Check if we're still in call before starting display
+          if not self.client.is_in_call():
+              print("Call not active, cannot start video display")
+              return False
 
-            # Keep looping while call is active
-            while self.call_active and self.running:
-                current_time = time.time()
+          # This should be a SINGLE blocking call that handles all video display
+          # The C++ function will run its own event loop until the user closes the window
+          print("Starting video display (this will block until window is closed)...")
+          self.client.process_video_display()
+          
+          print("Video display function returned - window closed")
 
-                try:
-                    # Check if we're still in call
-                    if not self.client.is_in_call():
-                        print("Call ended remotely")
-                        break
+      except KeyboardInterrupt:
+          print("Video display interrupted by keyboard")
+      except Exception as e:
+          print(f"Error in video display: {e}")
+          import traceback
+          traceback.print_exc()
 
-                    # Process video frames from the client
-                    # This is the key call that handles video display in C++
-                    self.client.process_video_display()
-
-                    if not video_started:
-                        video_started = True
-                        print("Video processing started...")
-
-                    # Handle key presses - waitKey is called inside process_video_display
-                    # but we can also check here for additional control
-
-                    frame_count += 1
-
-                    # Print status every 10 seconds
-                    if current_time - last_status_time >= 10.0:
-                        print(f"Video loop active... iterations: {frame_count}")
-                        print(f"Call status: {self.client.is_in_call()}")
-                        last_status_time = current_time
-
-                    # Small delay to prevent excessive CPU usage
-                    time.sleep(0.001)  # 1ms delay
-
-                except cv2.error as e:
-                    print(f"OpenCV error: {e}")
-                    # Continue trying for transient errors
-                    time.sleep(0.1)
-                    continue
-                except Exception as e:
-                    print(f"Error in video display loop: {e}")
-                    import traceback
-
-                    traceback.print_exc()
-                    break
-
-        except KeyboardInterrupt:
-            print("Video display interrupted by keyboard")
-        except Exception as e:
-            print(f"Unexpected error in video display: {e}")
-            import traceback
-
-            traceback.print_exc()
-        finally:
-            print("Cleaning up video display...")
-            try:
-                cv2.destroyAllWindows()
-                # Give OpenCV time to clean up
-                for _ in range(10):
-                    cv2.waitKey(1)
-            except:
-                pass
-
-        print(f"Video display loop ended after {frame_count} iterations")
-        return True
+      print("Video display completed")
+      return True
 
     def shutdown(self):
         """Clean shutdown of the video app"""
         if not self.running:
             return
 
-        print("Shutting down video app...")
-        self.running = False
-        self.call_active = False
-
         if self.client:
             try:
                 if hasattr(self.client, "request_shutdown"):
                     self.client.request_shutdown()
 
-                if self.client.is_in_call():
-                    print("Ending active call...")
-                    self.client.end_call()
-                    print("Call ended successfully")
-                    time.sleep(0.5)  # Give it time to clean up
+                # if self.client.is_in_call():
+                #     print("Ending active call...")
+                #     self.client.end_call()
+                #     print("Call ended successfully")
+                #     time.sleep(0.5)  # Give it time to clean up
             except Exception as e:
                 print(f"Error ending call: {e}")
 
@@ -214,7 +164,7 @@ class GopherVideoApp:
         success = self.run_video_display()
 
         print("Video display completed, shutting down...")
-        self.shutdown()
+        # self.shutdown()
 
         return success
 
@@ -260,6 +210,7 @@ def main():
         success = app.run()
         if success:
             print("Video app completed successfully")
+            app.shutdown()
             sys.exit(0)
         else:
             print("Video app failed")

@@ -14,6 +14,7 @@
 #include <queue>
 #include <condition_variable>
 #include <sstream>
+#include <csignal>
 
 //video specific includes
 #include <opencv2/opencv.hpp>
@@ -34,6 +35,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+
 // my stuff :)
 #include "gopherd_helper.hpp"
 #include "ffmpeg_sender.hpp"
@@ -47,11 +49,21 @@ extern "C" {
 #define RED "\033[31m"
 #define GREEN "\033[32m"
 #define RESET "\033[0m"
+#define ORANGE "\033[38;5;208m"
+#define BLUE "\033[34m"
+
 
 // Declare external variables from ffmpeg_sender.cpp
 extern std::queue<cv::Mat> display_queue;
 extern std::mutex display_mutex;
 extern std::condition_variable display_cv;
+
+std::atomic<bool> send_thread_should_stop_;
+std::atomic<bool> recv_thread_should_stop_;
+std::atomic<bool> main_thread_should_stop_;
+
+// I just want to talk fabrice. i justttt want to talk to you.
+AVFormatContext* input_ctx = nullptr;
 
 // Global variables for legacy functions
 std::string gopher_name;
@@ -159,13 +171,10 @@ GopherClient::GopherClient() :
     in_call_(false),
     dev_mode_(false),
     listening_socket_(-1),
-    listening_port_(0),
-    display_thread_should_stop_(false) {
+    listening_port_(0) {
 }
 
-GopherClient::~GopherClient() {
-    shutdown();
-}
+GopherClient::~GopherClient() {}
 
 bool GopherClient::initialize(const std::string& name, uint16_t recv_port) {
     if (initialized_) {
@@ -214,14 +223,23 @@ bool GopherClient::initialize(const std::string& name, uint16_t recv_port) {
 
     }
 
-    
+    send_thread_should_stop_ = false;
+    recv_thread_should_stop_ = false;
+    main_thread_should_stop_ = false;
     initialized_ = true;
     
     return true;
 }
+
+
 void GopherClient::shutdown() {
+  auto timer = std::chrono::steady_clock::now();
     
-  display_thread_should_stop_ = true;
+  main_thread_should_stop_ = true;
+  recv_thread_should_stop_ = true;
+  send_thread_should_stop_ = true;
+
+  std::cout << "Shutting down GopherClient...\n";
 
   display_cv.notify_all();
   frame_cv.notify_all();
@@ -229,27 +247,36 @@ void GopherClient::shutdown() {
   SDL_Event quit_e;
   quit_e.type = SDL_QUIT;
   SDL_PushEvent(&quit_e);
-    
-  end_call();
+
+  std::cout << "killed SDL window" << std::endl;
   
   initialized_ = false;
-  
-  if (listen_thread_.joinable()) {
-      listen_thread_.join();
+
+  try {
+    avformat_close_input(&input_ctx);
+  } catch (const std::exception& e) {
+    std::cerr << RED << "Error closing FFmpeg input context: " << e.what() << RESET << std::endl;
   }
-  
-  if (listening_socket_ >= 0) {
-      close(listening_socket_);
-      listening_socket_ = -1;
-  }
+
+  std::cout << "Waiting for send threads to finish..." << std::endl;
+  if (sender_thread_.joinable())   sender_thread_.join();
+
+
+  std::cout << "Waiting for recv threads to finish..." << std::endl;
+  if (receiver_thread_.joinable()) receiver_thread_.join();
+
+  auto elapsed = std::chrono::steady_clock::now() - timer;
+  std::cout << "GopherClient shutdown took "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+              << " ms" << std::endl;
 }
 
 bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port) {
     if (!initialized_ || in_call_) return false;
     
     in_call_ = true;
-    display_thread_should_stop_ = false;
-    
+    main_thread_should_stop_ = false;
+
     // Store call target info for display window title
     call_target_name_ = target_ip + ":" + std::to_string(target_port);
     
@@ -262,24 +289,21 @@ bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port
     return true;
 }
 
-void GopherClient::end_call() {
-    if (!in_call_) return;
+void GopherClient::end_call() {    
+    main_thread_should_stop_ = true;
+    recv_thread_should_stop_ = true;
+    send_thread_should_stop_ = true;
     
-    in_call_ = false;
-    display_thread_should_stop_ = true;
-    
-    // Wake up display thread
+    // sender.stop();
+    // receiver.stop();
+
+    // wake any waits:
     display_cv.notify_all();
-    
-    if (sender_thread_.joinable()) {
-        sender_thread_.join();
-    }
-    
-    if (receiver_thread_.joinable()) {
-        receiver_thread_.join();
-    }
-    
-    cv::destroyAllWindows();
+    frame_cv.notify_all();
+
+    // now join exactly once:
+    if (sender_thread_.joinable())   sender_thread_.join();
+    if (receiver_thread_.joinable()) receiver_thread_.join();
 }
 
 bool GopherClient::is_in_call() const {
@@ -290,8 +314,8 @@ void GopherClient::set_incoming_call_callback(std::function<bool(const std::stri
     incoming_call_callback_ = callback;
 }
 
-int video_width = 640; // Default video width
-int video_height = 480; // Default video height
+int video_width = 640;
+int video_height = 480;
 
 void GopherClient::process_video_display() {
     if (!in_call_) return;
@@ -315,13 +339,12 @@ void GopherClient::process_video_display() {
         video_width, video_height
     );
 
-    bool running = true;
-    while (running) {
+    while (!main_thread_should_stop_) {
         // Handle SDL events
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) {
-                running = false;
+                main_thread_should_stop_ = true;
                 break;
             }
         }
@@ -360,10 +383,19 @@ void GopherClient::process_video_display() {
     }
 
     // Cleanup SDL
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (texture) SDL_DestroyTexture(texture);
+    if (renderer) SDL_DestroyRenderer(renderer);
+    if (window) SDL_DestroyWindow(window);
+
+    Uint32 quit_time = SDL_GetTicks() + 50;   // 50 ms from now
+    while (SDL_GetTicks() < quit_time) {
+      SDL_PumpEvents();
+      SDL_Delay(1);
+    }
+
     SDL_Quit();
+
+    std::cout << GREEN << "[PROCCESS_VIDEO_DISPLAY]" << RESET << "finished running loop" << std::endl;
 }
 
 std::string GopherClient::get_local_ip() {

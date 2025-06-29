@@ -54,7 +54,6 @@ private:
     
     std::atomic<bool> initialized_;
     std::atomic<bool> in_call_;
-    std::atomic<bool> display_thread_should_stop_;
     bool dev_mode_;
     
     int listening_socket_;

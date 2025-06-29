@@ -18,6 +18,8 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+extern std::atomic<bool> recv_thread_should_stop_;
+
 class FFmpegReceiver {
 private:
     int sock = -1;

@@ -36,7 +36,7 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     av_dict_set(&options, "video_size", "1280x720", 0);
     av_dict_set(&options, "framerate", "30", 0);
     av_dict_set(&options, "pixel_format", "uyvy422", 0);
-    
+
     if (avformat_open_input(&input_ctx, "0:", input_fmt, &options) < 0) {
         std::cerr << "Failed to open camera" << std::endl;
         return false;
@@ -109,6 +109,11 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     return true;
 }
 
+/*
+* main processing loop, runs in a separate thread
+* which means it needs to be able to be stopped at any time
+
+*/
 void FFmpegSender::run() {
     // Adaptive throttling - starts conservative and adjusts
     const double base_fps = 30.0;
@@ -141,15 +146,20 @@ void FFmpegSender::run() {
     int64_t frame_count = 0;
     auto last_frame_time = std::chrono::steady_clock::now();
     
-    while (true) {
+    while (!send_thread_should_stop_) {
+        if (send_thread_should_stop_) {
+          // Print in orange (ANSI escape code for orange is not standard, but 33 is yellow/orange-ish)
+          printf("\033[38;5;208m[FFmpegSender] send_thread_should_stop_ set, stopping thread...\033[0m\n");
+          break;
+        }
+
         auto loop_start = std::chrono::steady_clock::now();
         bool frame_processed = false;
         
         // Try to read and process a frame
         int ret = av_read_frame(input_ctx, input_pkt);
-        if (ret < 0) {
+        if ((ret < 0) || (send_thread_should_stop_)) {
             if (ret == AVERROR_EOF) {
-                // End of file - for live streams, you might want to reconnect
                 break;
             }
             // Other errors - short sleep and continue
@@ -275,6 +285,6 @@ void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type) {
 FFmpegSender::~FFmpegSender() {
     if (sws_ctx) sws_freeContext(sws_ctx);
     if (encoder_ctx) avcodec_free_context(&encoder_ctx);
-    if (input_ctx) avformat_close_input(&input_ctx);
+    // if (input_ctx) avformat_close_input(&input_ctx); //!remove
     if (sock >= 0) close(sock);
 }

@@ -17,18 +17,36 @@ bool FFmpegReceiver::initialize(int advertised_socket_, uint16_t listen_port) {
     
     // Take control of the existing socket
     sock = advertised_socket_;
+
+    //set sock to be non-blocking
+    struct timeval tv{.tv_sec=0, .tv_usec=100000}; // 100 ms
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     return true;
 }
 
 void FFmpegReceiver::run() {
+
     // buffer to read raw UDP data
     uint8_t recv_buffer[2048];
 
-    while (true) {
+    while (!recv_thread_should_stop_) {
+        if (recv_thread_should_stop_) {
+            // Print in orange (ANSI escape code for orange is not standard, but 33 is yellow/orange-ish)
+            printf("\033[38;5;208m[FFmpegRECV] recv_thread_should_stop_ set, stopping thread...\033[0m\n");
+            break;
+        }
         // --- 1) Read header ---
         uint32_t net_size;
-        recvfrom(sock, &net_size, sizeof(net_size), 0, nullptr, nullptr);
+        ssize_t n = recvfrom(sock, &net_size, sizeof(net_size), 0, nullptr, nullptr);
+        if (n != sizeof(net_size)) {
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) 
+            continue;   // just a timeout, try again
+        else
+            break;      // fatal error or closed socket
+        }
         uint32_t total_size = ntohl(net_size);
+
 
         uint8_t packet_type;
         recvfrom(sock, &packet_type, sizeof(packet_type), 0, nullptr, nullptr);
@@ -37,7 +55,11 @@ void FFmpegReceiver::run() {
         recvfrom(sock, &net_ts, sizeof(net_ts), 0, nullptr, nullptr);
         uint64_t send_ts_us = ntohll(net_ts);
 
-        uint32_t payload_len = total_size - 1 - sizeof(net_ts);
+        constexpr uint32_t header_overhead = 1 + sizeof(net_ts);
+        // i shall not allocate 4 gigabytes again
+        if (total_size < header_overhead || total_size > (1 << 24)) break;
+
+        uint32_t payload_len = total_size - header_overhead;
 
         // --- 2) Read payload ---
         std::vector<uint8_t> payload(payload_len);
