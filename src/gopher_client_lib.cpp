@@ -29,7 +29,6 @@ extern "C" {
 }
 
 // my stuff :)
-#include "gopherd_helper.hpp"
 #include "ffmpeg_sender.hpp"
 #include "ffmpeg_receiver.hpp"
 #include "gopher_client_lib.hpp"

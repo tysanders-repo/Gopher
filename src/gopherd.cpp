@@ -44,7 +44,7 @@ void signal_handler(int sig) {
     running = 0;
 }
 
-void udp_listener_safe() {
+int udp_listener_safe() {
 #ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -54,7 +54,7 @@ void udp_listener_safe() {
 
     if (sock < 0) {
       std::cerr << "Failed to create UDP socket: " << strerror(errno) << std::endl;
-      return;
+      return -1;
     }
     
     // Set socket timeout to allow checking running flag
@@ -79,7 +79,7 @@ void udp_listener_safe() {
         std::cerr << "Failed to bind UDP socket to port " << BROADCAST_PORT 
                   << ": " << strerror(errno) << std::endl;
         close(sock);
-        return;
+        return -1;
     }
     
     std::cout << "UDP listener started on port " << BROADCAST_PORT << std::endl;
@@ -149,9 +149,12 @@ void udp_listener_safe() {
     std::cout << "UDP listener shutting down" << std::endl;
     close(sock);
     
+    
 #ifdef _WIN32
     WSACleanup();
 #endif
+
+  return 0;
 }
 
 void tcp_server_safe() {
@@ -236,15 +239,6 @@ int main(int argc, char* argv[]) {
         // Start the server threads
         std::thread udp_thread(udp_listener_safe);
         std::thread tcp_thread(tcp_server_safe);
-        
-        std::cout << "Gopherd is running. Press Ctrl+C to stop." << std::endl;
-        
-        // Main loop - wait for signal
-        while (running) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-        
-        std::cout << "Shutting down..." << std::endl;
         
         // Clean shutdown
         if (udp_thread.joinable()) {
