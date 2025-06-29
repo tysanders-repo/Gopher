@@ -9,6 +9,7 @@
 #include <ctime>
 #include <csignal>
 #include <algorithm>
+#include <poll.h>
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -21,7 +22,6 @@
   #include <unistd.h>
   #include <errno.h>
 #endif
-#include <sys/fcntl.h>
 
 constexpr uint16_t BROADCAST_PORT = 43753;
 constexpr uint16_t QUERY_PORT     = 43823;
@@ -56,13 +56,6 @@ void udp_listener_safe() {
       std::cerr << "Failed to create UDP socket: " << strerror(errno) << std::endl;
       return;
     }
-
-    int flags = fcntl(sock, F_GETFL, 0);
-    if (flags < 0) {
-        std::cerr << "fcntl(F_GETFL) failed: " << strerror(errno) << "\n";
-    } else if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        std::cerr << "fcntl(F_SETFL) failed: " << strerror(errno) << "\n";
-    }
     
     // Set socket timeout to allow checking running flag
     struct timeval timeout;
@@ -94,8 +87,18 @@ void udp_listener_safe() {
     char buffer[1024];
     sockaddr_in sender;
     socklen_t sender_len = sizeof(sender);
+
+    struct pollfd pfd{.fd = sock, .events = POLLIN};
     
     while (running) {
+        int ret = poll(&pfd, 1, 1000);
+        if (ret < 0) {
+            std::cerr << "Poll error: " << strerror(errno) << std::endl;
+            break;
+        } else if (ret == 0) {
+            continue;
+        }
+
         int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, 
                        (struct sockaddr*)&sender, &sender_len);
         if (n < 0) {
@@ -157,15 +160,6 @@ void tcp_server_safe() {
         std::cerr << "Failed to create TCP socket: " << strerror(errno) << std::endl;
         return;
     }
-
-    // POSIX
-    int flags = fcntl(sock, F_GETFL, 0);
-    if (flags < 0) {
-        std::cerr << "fcntl(F_GETFL) failed: " << strerror(errno) << "\n";
-    } else if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        std::cerr << "fcntl(F_SETFL) failed: " << strerror(errno) << "\n";
-    }
-
     
     // Set socket timeout
     struct timeval timeout;
