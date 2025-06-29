@@ -10,8 +10,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <opencv2/opencv.hpp>
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>

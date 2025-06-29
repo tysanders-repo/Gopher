@@ -27,7 +27,7 @@ endif()
 
 include_directories(
   ${FFMPEG_INCLUDE_DIRS}
-  ${OpenCV_INCLUDE_DIRS}
+  # ${OpenCV_INCLUDE_DIRS}
   ${SDL2_INCLUDE_DIRS}
   ${CMAKE_SOURCE_DIR}/src
 )
@@ -37,7 +37,7 @@ link_directories(${FFMPEG_LIBRARY_DIRS})
 file(GLOB_RECURSE DAEMON_SRC "src/gopherd.cpp")
 add_executable(gopherd ${DAEMON_SRC})
 target_link_libraries(gopherd PRIVATE
-  ${OpenCV_LIBRARIES}
+  # ${OpenCV_LIBRARIES}
   ${FFMPEG_LIBRARIES}
 )
 
@@ -50,7 +50,7 @@ file(GLOB_RECURSE CLIENT_LIB_SRC
 add_library(gopher_client_lib STATIC ${CLIENT_LIB_SRC})
 target_link_libraries(gopher_client_lib PUBLIC
   ${FFMPEG_LIBRARIES}
-  ${OpenCV_LIBRARIES}
+  # ${OpenCV_LIBRARIES}
   ${SDL2_LIBRARIES}
 )
 target_include_directories(gopher_client_lib PUBLIC
@@ -79,8 +79,8 @@ if(APPLE)
       "-framework CoreMedia"
       "-framework CoreVideo"
       "-framework CoreAudio"
-      "-lz"
-      "-liconv"
+      # "-lz"
+      # "-liconv"
     )
   endforeach()
 endif()

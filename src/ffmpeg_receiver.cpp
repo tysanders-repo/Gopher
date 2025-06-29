@@ -3,7 +3,7 @@
 // External declarations - these are defined in ffmpeg_sender.cpp
 extern std::queue<AVFrame*> frame_queue;
 extern std::mutex display_mutex;
-extern std::condition_variable display_cv;
+// extern std::condition_variable display_cv; //!remove
 
 bool FFmpegReceiver::initialize(int advertised_socket_, uint16_t listen_port) {
     // Setup decoder
@@ -31,11 +31,6 @@ void FFmpegReceiver::run() {
     uint8_t recv_buffer[2048];
 
     while (!recv_thread_should_stop_) {
-        if (recv_thread_should_stop_) {
-            // Print in orange (ANSI escape code for orange is not standard, but 33 is yellow/orange-ish)
-            printf("\033[38;5;208m[FFmpegRECV] recv_thread_should_stop_ set, stopping thread...\033[0m\n");
-            break;
-        }
         // --- 1) Read header ---
         uint32_t net_size;
         ssize_t n = recvfrom(sock, &net_size, sizeof(net_size), 0, nullptr, nullptr);
@@ -111,7 +106,7 @@ void FFmpegReceiver::processVideoPacket(const std::vector<uint8_t>& data) {
                 frame_queue.pop();
             }
             frame_queue.push(frame);
-            display_cv.notify_one();
+            // display_cv.notify_one();//!remove
         }
         av_frame_free(&raw);
     }

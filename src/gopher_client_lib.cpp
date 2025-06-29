@@ -17,7 +17,6 @@
 #include <csignal>
 
 //video specific includes
-#include <opencv2/opencv.hpp>
 #include <SDL2/SDL.h>
 
 // Fix for macOS Block.h issue - include this before FFmpeg headers
@@ -54,9 +53,9 @@ extern "C" {
 
 
 // Declare external variables from ffmpeg_sender.cpp
-extern std::queue<cv::Mat> display_queue;
+// extern std::queue<cv::Mat> display_queue; //!remove
 extern std::mutex display_mutex;
-extern std::condition_variable display_cv;
+// extern std::condition_variable display_cv; //!remove
 
 std::atomic<bool> send_thread_should_stop_;
 std::atomic<bool> recv_thread_should_stop_;
@@ -241,7 +240,7 @@ void GopherClient::shutdown() {
 
   std::cout << "Shutting down GopherClient...\n";
 
-  display_cv.notify_all();
+  // display_cv.notify_all(); //!remove
   frame_cv.notify_all();
 
   SDL_Event quit_e;
@@ -298,7 +297,7 @@ void GopherClient::end_call() {
     // receiver.stop();
 
     // wake any waits:
-    display_cv.notify_all();
+    // display_cv.notify_all(); //!remove
     frame_cv.notify_all();
 
     // now join exactly once:

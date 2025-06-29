@@ -9,9 +9,10 @@ struct VideoPacket {
 };
 
 // Global frame queue for display - make sure these are properly defined
-std::queue<cv::Mat> display_queue;
+//! remove
+// std::queue<cv::Mat> display_queue;
 std::mutex display_mutex;
-std::condition_variable display_cv;
+// std::condition_variable display_cv;
 
 bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port) {
     // Initialize FFmpeg
@@ -147,11 +148,6 @@ void FFmpegSender::run() {
     auto last_frame_time = std::chrono::steady_clock::now();
     
     while (!send_thread_should_stop_) {
-        if (send_thread_should_stop_) {
-          // Print in orange (ANSI escape code for orange is not standard, but 33 is yellow/orange-ish)
-          printf("\033[38;5;208m[FFmpegSender] send_thread_should_stop_ set, stopping thread...\033[0m\n");
-          break;
-        }
 
         auto loop_start = std::chrono::steady_clock::now();
         bool frame_processed = false;
