@@ -34,6 +34,7 @@
 		15B549482E5985CF00E5C918 /* macosUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = macosUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		15B5496C2E5988CF00E5C918 /* libgopher_core.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libgopher_core.a; path = ../../build/lib/libgopher_core.a; sourceTree = "<group>"; };
 		15B5496D2E5988CF00E5C918 /* libgopher_bridge.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libgopher_bridge.a; path = ../../build/lib/libgopher_bridge.a; sourceTree = "<group>"; };
+		15B549812E5990F800E5C918 /* GopherBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GopherBridge.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -89,6 +90,7 @@
 				15B5494B2E5985CF00E5C918 /* macosUITests */,
 				15B5496B2E5988CF00E5C918 /* Frameworks */,
 				15B5492E2E5985CE00E5C918 /* Products */,
+				15B549812E5990F800E5C918 /* GopherBridge.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -434,6 +436,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Ty.macos;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = GopherBridge.h;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -466,6 +469,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Ty.macos;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = GopherBridge.h;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
