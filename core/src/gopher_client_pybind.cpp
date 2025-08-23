@@ -2,7 +2,7 @@
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>  // Required for std::vector conversion
 #include <iostream>
-#include "gopher_client_lib.hpp"
+#include "gopher/gopher_client_lib.hpp"
 
 namespace py = pybind11;
 

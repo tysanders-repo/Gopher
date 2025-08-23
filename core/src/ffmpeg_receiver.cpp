@@ -1,4 +1,4 @@
-#include "ffmpeg_receiver.hpp"
+#include "gopher/ffmpeg_receiver.hpp"
 
 extern std::queue<AVFrame*> frame_queue;
 extern std::mutex display_mutex;

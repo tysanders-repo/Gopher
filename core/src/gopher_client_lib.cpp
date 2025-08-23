@@ -29,9 +29,9 @@ extern "C" {
 }
 
 // my stuff :)
-#include "ffmpeg_sender.hpp"
-#include "ffmpeg_receiver.hpp"
-#include "gopher_client_lib.hpp"
+#include "gopher/ffmpeg_sender.hpp"
+#include "gopher/ffmpeg_receiver.hpp"
+#include "gopher/gopher_client_lib.hpp"
 
 #ifdef __APPLE__
 #include <VideoToolbox/VideoToolbox.h>

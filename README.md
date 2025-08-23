@@ -1,184 +1,160 @@
-**Gopher Video Calling Suite**
+# Gopher - Professional Video Calling Framework
 
-A lightweight peer-to-peer video calling framework leveraging FFmpeg, SDL2, and Python for discovery and UI on macOS.
+A highly reliable, fault-tolerant, low-latency video calling framework designed for satellite-based global software defined networks.
 
----
-
-## Table of Contents
-
-- [Table of Contents](#table-of-contents)
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Components](#components)
-- [Prerequisites](#prerequisites)
-- [Building and Installation](#building-and-installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Overview
-
-The Gopher Video Calling Suite provides:
-
-* **Peer discovery** via UDP broadcasts and a central daemon (`gopherd`).
-* **Status bar UI** on macOS (`gopher_status_app.py`) for initiating and managing calls.
-* **High-performance video streaming** using FFmpeg for encoding/decoding.
-* **C++ core** (`GopherClient`) exposed to Python via pybind11.
-* **SDL2-based display** of incoming video, compliant with macOS threading requirements.
-
-Ideal for lightweight local network video calls without centralized servers.
-
----
-
-## Architecture
+## 🏗️ Project Structure
 
 ```
-+--------------+        +------------+        +----------------+
-| Status App   | <-->   | gopherd    | <-->   | Status App     |
-| (Python+UI)  | UDP    | (Daemon)   | TCP    | (Python+UI)    |
-+--------------+        +------------+        +----------------+
-      |                                    |
-      v                                    v
-+-------------+   UDP   +-------------+   UDP   +-------------+
-| FFmpegSender| ------> | FFmpegReceiver| <-----| FFmpegSender|
-| (C++)       |         | (C++)        |        | (C++)       |
-+-------------+         +-------------+        +-------------+
-      \                                     /
-       \                                   /
-        \---process_video_display (SDL2)--/    (Python)
+gopher/
+├── CMakeLists.txt                 # Drives C++ builds (core + daemon); can also emit Xcode projects
+├── README.md                      # This file
+├── docs/                          # Project documentation
+│   ├── architecture.md            # System architecture overview
+│   ├── build-macos.md             # macOS build instructions
+│   └── ipc-protocol.md            # Inter-process communication protocol
+├── cmake/                         # CMake helpers/toolchains
+│   └── FindFFmpeg.cmake          # Custom FFmpeg finder
+├── third_party/                   # Pinned external dependencies
+├── core/                          # Main core utility library (C++)
+│   ├── include/gopher/            # Public headers
+│   │   ├── ffmpeg_receiver.hpp
+│   │   ├── ffmpeg_sender.hpp
+│   │   ├── gopher_client_lib.hpp
+│   │   └── version.hpp
+│   ├── src/                       # Implementation files
+│   └── tests/                     # C++ unit tests
+├── daemon/                        # Separate executable (C++)
+│   ├── include/gopherd/           # Daemon headers
+│   ├── src/                       # Daemon implementation
+│   ├── launchd/                   # macOS launch agent
+│   └── tests/                     # Daemon tests
+├── bridge/                        # Obj-C++ shim for Swift integration
+│   ├── include/gopher_bridge/     # C/ObjC headers
+│   └── src/                       # Bridge implementation
+├── apps/
+│   └── macos-statusbar/           # Swift status bar app
+│       ├── gopher.xcodeproj       # Xcode project
+│       ├── Sources/               # Swift source files
+│       ├── Resources/             # App resources
+│       └── Tests/                 # Swift tests
+└── test/                          # Cross-cutting system tests
+    ├── e2e/                       # End-to-end tests
+    └── data/                      # Test fixtures
 ```
 
-* **Discovery**: `gopher_status_app.py` broadcasts presence, queries `gopherd` for peers.
-* **Call Setup**: Status app spawns `gopher_video_app.py`, which initializes `GopherClient` in both sender and receiver modes.
-* **Media Pipeline**: `FFmpegSender` captures camera input, encodes to H.264 (low-latency), and sends via UDP. `FFmpegReceiver` decodes incoming packets and enqueues frames.
-* **Display**: Frames are rendered in an SDL2 window on the main thread by calling into the C++ display loop from Python.
+## 🚀 Quick Start
 
----
+### Prerequisites
+- **macOS 12.0+**
+- **Xcode 15.0+**
+- **CMake 3.18+**
+- **FFmpeg** (via Homebrew)
+- **SDL2** (via Homebrew)
 
-## Components
+### Build C++ Components
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(sysctl -n hw.ncpu)
+sudo make install
+```
 
-1. **gopherd** (C++)
+### Build SwiftUI App
+```bash
+cd apps/macos-statusbar
+open gopher.xcodeproj
+# Build in Xcode
+```
 
-   * UDP peer listener (port 43753)
-   * TCP query server (port 43823)
-2. **GopherClient** (C++)
+## 🏛️ Architecture
 
-   * Core API for call control, discovery integration, and media threads.
-   * Exposed to Python via **pybind11**.
-3. **FFmpegSender/Receiver** (C++)
+### Core Library
+- **Pure C++** - No platform dependencies
+- **FFmpeg integration** - High-performance video/audio
+- **SDL2 integration** - Cross-platform media display
+- **Thread-safe design** - Concurrent operation support
 
-   * Real-time capture, encoding, and decoding using FFmpeg.
-   * Adaptive throttling and frame-drop logic for smooth streaming.
-4. **gopher\_status\_app.py** (Python)
+### Daemon
+- **Background service** - macOS launchd integration
+- **Peer discovery** - UDP broadcast and TCP query
+- **Call routing** - Manages active connections
+- **Health monitoring** - Self-healing capabilities
 
-   * Mac status-bar UI via **rumps**. Peer listing, call initiation, menu refresh.
-5. **gopher\_video\_app.py** (Python)
+### Bridge Layer
+- **C interface** - Clean C API for Swift
+- **Error handling** - Comprehensive error codes
+- **Memory management** - RAII-compliant C++ wrapper
+- **Callback support** - Event-driven architecture
 
-   * Standalone video display client.
-   * Handles signals and clean shutdown via `GopherClient` prompts.
+### SwiftUI App
+- **Status bar integration** - Native macOS experience
+- **Modern UI** - SwiftUI 5.0+ features
+- **Network integration** - Network.framework usage
+- **Media handling** - AVFoundation integration
 
----
+## 🔧 Build System
 
-## Prerequisites
+### CMake Features
+- **Multi-target builds** - Core, daemon, bridge
+- **Dependency management** - FFmpeg, SDL2
+- **Install targets** - System-wide installation
+- **Xcode generation** - `cmake -G Xcode ..`
 
-* **macOS 10.15+**
-* **C++17** compiler (Clang or GCC)
-* **CMake** ≥ 3.18
-* **FFmpeg** development libraries (`libavcodec`, `libavformat`, `libavdevice`, `libswscale`)
-* **SDL2** development headers
-* **pybind11**
-* **Python 3.8+**
-* Python packages: `rumps`, `pybind11`, `typing_extensions`
-* **Xcode** command-line tools
+### Xcode Integration
+- **Separate project** - SwiftUI app development
+- **Library linking** - Links against built C++ libraries
+- **Framework support** - Can use built bridge as framework
 
----
+## 🧪 Testing
 
-## Building and Installation
+### Unit Tests
+- **C++ tests** - GoogleTest framework
+- **Swift tests** - XCTest framework
+- **Integration tests** - Component interaction testing
 
-1. **Clone & submodules**
+### System Tests
+- **E2E tests** - Full system validation
+- **Performance tests** - Latency and throughput
+- **Reliability tests** - Fault injection and recovery
 
-   ```sh
-   git clone https://github.com/yourorg/gopher-video-suite.git
-   cd gopher-video-suite
-   git submodule update --init --recursive
-   ```
+## 📱 Features
 
-2. **Build C++ core and FFmpeg modules**
+### Video Calling
+- **H.264 encoding** - Hardware-accelerated
+- **Low latency** - Sub-50ms target
+- **Adaptive quality** - Network condition adaptation
+- **Multi-stream** - Video + audio synchronization
 
-   ```sh
-   mkdir build && cd build
-   cmake .. -DCMAKE_BUILD_TYPE=Release
-   make -j$(sysctl -n hw.ncpu)
-   sudo make install
-   ```
+### Network
+- **Peer discovery** - Automatic peer finding
+- **Call routing** - Direct peer-to-peer
+- **Fallback support** - Relay when needed
+- **Global routing** - Satellite network ready
 
-3. **Install Python components**
+### Reliability
+- **Fault tolerance** - Automatic recovery
+- **Health monitoring** - Continuous health checks
+- **Graceful degradation** - Service continuity
+- **Disaster recovery** - Backup systems
 
-   ```sh
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
+## 🎯 Roadmap
 
-4. **Install macOS UI tool** (if not in `$PATH`)
+See [docs/WISHLIST.md](docs/WISHLIST.md) for detailed feature roadmap and implementation priorities.
 
-   ```sh
-   ln -sf $(pwd)/scripts/gopher_status_app.py /usr/local/bin/gopher-status
-   ln -sf $(pwd)/scripts/gopher_video_app.py  /usr/local/bin/gopher-video
-   ```
+## 🤝 Contributing
 
----
+1. Fork the repository
+2. Create a feature branch
+3. Follow the established architecture
+4. Add appropriate tests
+5. Submit a pull request
 
-## Configuration
+## 📄 License
 
-* **Dev Mode**: Pass `--dev` to both Python apps to include self in peer list and enable verbose logging.
-* **Ports**: Default broadcast port 43753 and query port 43823 can be overridden via constants in `gopherd.cpp`.
+This project is licensed under the MIT License. See [docs/LICENSE](docs/LICENSE) for details.
 
----
+## 🆘 Support
 
-## Usage
-
-1. **Start the daemon**
-
-   ```sh
-   sudo gopherd
-   ```
-
-2. **Launch Status App**
-
-   ```sh
-   gopher-status --name alice
-   ```
-
-3. **Select a peer from the menu** to initiate a call.
-
-4. **End Call** via status-menu or close the video window.
-
----
-
-## Troubleshooting
-
-* **No peers listed**: Ensure `gopherd` is running and UDP broadcast is allowed in firewall.
-* **Video window black/stuck**: Check that camera access is granted (add `NSCameraUseContinuityCameraDeviceType` to Info.plist for AVCapture).
-* **High latency or frame drops**: Adjust encoder settings in `FFmpegSender` (bitrate, GOP size) or network MTU.
-
----
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feat/your-feature`)
-3. Commit your changes
-4. Submit a Pull Request
-
-Please adhere to the existing style and write tests for new features.
-
----
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+- **Documentation**: Check the [docs/](docs/) directory
+- **Issues**: Use GitHub issues for bug reports
+- **Discussions**: Use GitHub discussions for questions
