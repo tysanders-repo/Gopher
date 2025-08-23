@@ -10,13 +10,14 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <opencv2/opencv.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
+
+extern std::atomic<bool> recv_thread_should_stop_;
 
 class FFmpegReceiver {
 private:

@@ -1,104 +1,120 @@
 #include "ffmpeg_receiver.hpp"
 
-// External declarations - these are defined in ffmpeg_sender.cpp
-extern std::queue<cv::Mat> display_queue;
+extern std::queue<AVFrame*> frame_queue;
 extern std::mutex display_mutex;
-extern std::condition_variable display_cv;
 
-bool FFmpegReceiver::initialize(int existing_sock_fd, uint16_t listen_port) {
+
+bool FFmpegReceiver::initialize(int socket_fd, uint16_t listen_port) {
     // Setup decoder
     const AVCodec* decoder = avcodec_find_decoder(AV_CODEC_ID_H264);
-    decoder_ctx = avcodec_alloc_context3(decoder);
-    
+               decoder_ctx = avcodec_alloc_context3(decoder);
+
+    if (!decoder || !decoder_ctx) {
+        std::cerr << "Failed to find or allocate decoder" << std::endl;
+        return false;
+    }
+
     if (avcodec_open2(decoder_ctx, decoder, nullptr) < 0) {
         std::cerr << "Failed to open decoder" << std::endl;
         return false;
     }
     
-    // Setup network
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(listen_port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-    
-    sock = existing_sock_fd;
-    
+    // Take control of the existing socket
+    sock = socket_fd;
+
+    //set sock to be non-blocking
+    struct timeval tv{.tv_sec=0, .tv_usec=50000};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     return true;
 }
 
 void FFmpegReceiver::run() {
-    std::vector<uint8_t> packet_buffer;
+
+    // buffer to read raw UDP data
     uint8_t recv_buffer[2048];
-    
-    while (true) {
-        // Receive packet size
-        uint32_t packet_size;
-        if (recvfrom(sock, &packet_size, sizeof(packet_size), 0, nullptr, nullptr) 
-            != sizeof(packet_size)) continue;
-        
-        packet_size = ntohl(packet_size);
-        if (packet_size > 100000) continue; // Sanity check
-        
-        // Receive packet type
+
+    while (!recv_thread_should_stop_) {
+        // --- 1) Read header ---
+        uint32_t net_size;
+        ssize_t n = recvfrom(sock, &net_size, sizeof(net_size), 0, nullptr, nullptr);
+        if (n != sizeof(net_size)) {
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) 
+            continue;   // just a timeout, try again
+        else
+            break;      // fatal error or closed socket
+        }
+        uint32_t total_size = ntohl(net_size);
+
+
         uint8_t packet_type;
-        if (recvfrom(sock, &packet_type, 1, 0, nullptr, nullptr) != 1) continue;
-        
-        // Receive packet data
-        packet_buffer.clear();
-        packet_buffer.reserve(packet_size - 1);
-        
-        while (packet_buffer.size() < packet_size - 1) {
-            int n = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, nullptr, nullptr);
-            if (n <= 0) break;
-            
-            size_t copy_size = std::min((size_t)n, packet_size - 1 - packet_buffer.size());
-            packet_buffer.insert(packet_buffer.end(), recv_buffer, recv_buffer + copy_size);
+        recvfrom(sock, &packet_type, sizeof(packet_type), 0, nullptr, nullptr);
+
+        uint64_t net_ts;
+        recvfrom(sock, &net_ts, sizeof(net_ts), 0, nullptr, nullptr);
+        uint64_t send_ts_us = ntohll(net_ts);
+
+        constexpr uint32_t header_overhead = 1 + sizeof(net_ts);
+        // i shall not allocate 4 gigabytes again
+        if (total_size < header_overhead || total_size > (1 << 24)) break;
+
+        uint32_t payload_len = total_size - header_overhead;
+
+        // --- 2) Read payload ---
+        std::vector<uint8_t> payload(payload_len);
+        size_t got = 0;
+        while (got < payload_len) {
+            int r = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, nullptr, nullptr);
+            if (r <= 0) break;
+            size_t copy_sz = std::min((size_t)r, payload_len - got);
+            std::memcpy(payload.data() + got, recv_buffer, copy_sz);
+            got += copy_sz;
         }
-        
-        if (packet_buffer.size() >= packet_size - 1 && packet_type == 1) {
-            processVideoPacket(packet_buffer);
+
+        // --- 3) Compute & record latency ---
+        auto now = std::chrono::steady_clock::now();
+        uint64_t recv_ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 now.time_since_epoch()).count();
+        // double latency_ms = (recv_ts_us - send_ts_us) * 1e-3;
+
+        // latencies.push_back(latency_ms);
+        // if (latencies.size() > MAX_SAMPLES)
+        //     latencies.pop_front();
+
+        // --- 5) Dispatch the packet ---
+        if (packet_type == 1) {
+            processVideoPacket(payload);
         }
+        // (add audio processing here later)
     }
 }
 
+int MAX_QUEUE_FRAMES = 10; // Maximum frames to keep in queue
+
 void FFmpegReceiver::processVideoPacket(const std::vector<uint8_t>& data) {
+    // 1) wrap incoming bytes in an AVPacket
     AVPacket* pkt = av_packet_alloc();
-    pkt->data = const_cast<uint8_t*>(data.data());
+    pkt->data = static_cast<uint8_t*>(av_malloc(data.size()));
+    memcpy(pkt->data, data.data(), data.size());
     pkt->size = data.size();
-    
+
     if (avcodec_send_packet(decoder_ctx, pkt) >= 0) {
-        AVFrame* frame = av_frame_alloc();
-        while (avcodec_receive_frame(decoder_ctx, frame) >= 0) {
-            // Convert to BGR for OpenCV display
-            cv::Mat img(frame->height, frame->width, CV_8UC3);
-            
-            if (!sws_ctx) {
-                sws_ctx = sws_getContext(
-                    frame->width, frame->height, (AVPixelFormat)frame->format,
-                    frame->width, frame->height, AV_PIX_FMT_BGR24,
-                    SWS_BILINEAR, nullptr, nullptr, nullptr
-                );
+        AVFrame* raw = av_frame_alloc();
+        while (avcodec_receive_frame(decoder_ctx, raw) >= 0) {
+            AVFrame* frame = av_frame_clone(raw);
+
+            std::lock_guard<std::mutex> lock(display_mutex);
+            if (frame_queue.size() > MAX_QUEUE_FRAMES) {
+                av_frame_free(&frame_queue.front());
+                frame_queue.pop();
             }
-            
-            uint8_t* dst_data[1] = { img.data };
-            int dst_linesize[1] = { (int)img.step[0] };
-            sws_scale(sws_ctx, frame->data, frame->linesize, 0, frame->height,
-                      dst_data, dst_linesize);
-            
-            // Add to display queue - use the external global queue
-            {
-                std::lock_guard<std::mutex> lock(display_mutex);
-                if (display_queue.size() > 10) display_queue.pop(); // Prevent overflow
-                display_queue.push(img.clone());
-            }
-            display_cv.notify_one();
+            frame_queue.push(frame);
         }
-        av_frame_free(&frame);
+        av_frame_free(&raw);
     }
-    
     av_packet_free(&pkt);
 }
+
 
 FFmpegReceiver::~FFmpegReceiver() {
     if (sws_ctx) sws_freeContext(sws_ctx);

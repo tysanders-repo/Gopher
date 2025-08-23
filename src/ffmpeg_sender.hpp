@@ -11,7 +11,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <opencv2/opencv.hpp>
+#include <chrono>
 
 extern "C" {
 #include <libavdevice/avdevice.h>
@@ -21,11 +21,13 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+//extern from gopher_client_lib.cpp
+extern AVFormatContext* input_ctx;
+
 class FFmpegSender {
 private:
     int sock = -1;
     sockaddr_in dest_addr{};
-    AVFormatContext* input_ctx = nullptr;
     AVCodecContext* encoder_ctx = nullptr;
     SwsContext* sws_ctx = nullptr;
     int video_stream_idx = -1;
@@ -38,9 +40,8 @@ public:
 };
 
 // External display variables
-extern std::queue<cv::Mat> display_queue;
 extern std::mutex display_mutex;
-extern std::condition_variable display_cv;
+extern std::atomic<bool> send_thread_should_stop_;
 
 // Display thread function
 void displayThread();
