@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 project(Gopher)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "" FORCE)
+
 
 # FetchContent for pybind11 if not installed
 include(FetchContent)
