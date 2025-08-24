@@ -15,12 +15,23 @@
         <p class="subtitle">Cross-platform peer-to-peer video calling</p>
       </header>
 
-      <section class="status">
+      <section class="gopher-setup" id="gopher-setup">
+        <h2>Setup Your Gopher</h2>
+        <div class="setup-form">
+          <input type="text" id="gopher-name" placeholder="Enter your name..." value="My Gopher">
+          <button id="initialize-btn" class="btn btn-primary">Initialize Gopher</button>
+        </div>
+      </section>
+
+      <section class="status" id="status-section" style="display: none;">
         <div class="status-indicator">
           <span class="indicator" id="connection-status"></span>
           <span id="status-text">Connecting...</span>
         </div>
-        <button id="refresh-btn" class="btn btn-secondary">Refresh Network</button>
+        <div class="status-actions">
+          <button id="refresh-btn" class="btn btn-secondary">Refresh Network</button>
+          <button id="shutdown-btn" class="btn btn-secondary">Shutdown Gopher</button>
+        </div>
       </section>
 
       <section class="peers">

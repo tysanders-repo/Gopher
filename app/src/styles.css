@@ -50,6 +50,39 @@ header h1 {
   font-weight: 500;
 }
 
+.gopher-setup {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 30px;
+  border: 1px solid #e2e8f0;
+  text-align: center;
+}
+
+.gopher-setup h2 {
+  margin: 0 0 20px 0;
+  font-size: 1.3em;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.setup-form {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.setup-form input {
+  min-width: 200px;
+  padding: 10px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
 .status {
   display: flex;
   align-items: center;
@@ -60,6 +93,11 @@ header h1 {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   margin-bottom: 30px;
   border: 1px solid #e2e8f0;
+}
+
+.status-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .status-indicator {

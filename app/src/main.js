@@ -7,10 +7,78 @@ let refreshInterval;
 let statusIndicator;
 let statusText;
 let refreshBtn;
+let shutdownBtn;
 let peersList;
 let notificationArea;
+let gopherSetup;
+let statusSection;
+let gopherNameInput;
+let initializeBtn;
+
+// Gopher state
+let isGopherInitialized = false;
+
+async function initializeGopher() {
+  try {
+    const name = gopherNameInput.value.trim();
+    if (!name) {
+      showNotification("Error", "Please enter a name for your Gopher", "error");
+      return;
+    }
+
+    initializeBtn.disabled = true;
+    initializeBtn.textContent = "Initializing...";
+
+    const result = await invoke("initialize_gopher", { name });
+    
+    isGopherInitialized = true;
+    showGopherStatus();
+    showNotification("Success", result, "success");
+    
+    // Start loading peers
+    loadNetworkPeers();
+    
+  } catch (error) {
+    console.error("Failed to initialize Gopher:", error);
+    showNotification("Error", error, "error");
+  } finally {
+    initializeBtn.disabled = false;
+    initializeBtn.textContent = "Initialize Gopher";
+  }
+}
+
+async function shutdownGopher() {
+  try {
+    await invoke("shutdown_gopher");
+    isGopherInitialized = false;
+    showGopherSetup();
+    showNotification("Success", "Gopher shut down successfully", "success");
+    
+    // Stop auto-refresh
+    if (refreshInterval) {
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    }
+    
+  } catch (error) {
+    console.error("Failed to shutdown Gopher:", error);
+    showNotification("Error", error, "error");
+  }
+}
+
+function showGopherSetup() {
+  gopherSetup.style.display = "block";
+  statusSection.style.display = "none";
+}
+
+function showGopherStatus() {
+  gopherSetup.style.display = "none";
+  statusSection.style.display = "flex";
+}
 
 async function loadNetworkPeers() {
+  if (!isGopherInitialized) return;
+  
   try {
     statusText.textContent = "Loading...";
     statusIndicator.className = "indicator";
@@ -149,22 +217,28 @@ window.addEventListener("DOMContentLoaded", () => {
   statusIndicator = document.getElementById("connection-status");
   statusText = document.getElementById("status-text");
   refreshBtn = document.getElementById("refresh-btn");
+  shutdownBtn = document.getElementById("shutdown-btn");
   peersList = document.getElementById("peers-list");
   notificationArea = document.getElementById("notification-area");
+  gopherSetup = document.getElementById("gopher-setup");
+  statusSection = document.getElementById("status-section");
+  gopherNameInput = document.getElementById("gopher-name");
+  initializeBtn = document.getElementById("initialize-btn");
   
   // Add event listeners
+  initializeBtn.addEventListener("click", initializeGopher);
   refreshBtn.addEventListener("click", loadNetworkPeers);
+  shutdownBtn.addEventListener("click", shutdownGopher);
   
-  // Initial load
-  loadNetworkPeers();
+  // Allow Enter key to initialize Gopher
+  gopherNameInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      initializeGopher();
+    }
+  });
   
-  // Set up auto-refresh every 10 seconds
-  refreshInterval = setInterval(loadNetworkPeers, 10000);
-  
-  // Simulate an incoming call notification for demo purposes
-  setTimeout(() => {
-    showIncomingCallNotification("Demo User", "192.168.1.100", 12345);
-  }, 3000);
+  // Start with setup view
+  showGopherSetup();
 });
 
 // Cleanup on page unload
