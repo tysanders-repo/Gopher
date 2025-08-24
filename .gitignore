@@ -31,7 +31,92 @@
 *.out
 *.app
 
+# CMake build directory
 /build
 
+# macOS
 .DS_Store
+
+# IDEs
 .vscode/
+.idea/
+
+#3rd party dependencies
+.third_party/
+#may change this one day but i doubt sdl or ffmpeg will dissapear anytime soon
+vendor/
+
+# Tauri app artifacts
+app/src-tauri/target/
+app/src-tauri/Cargo.lock
+app/dist/
+app/dist-ssr/
+
+# Node.js
+app/node_modules/
+app/.npm/
+app/npm-debug.log*
+app/yarn-debug.log*
+app/yarn-error.log*
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Dependency directories
+node_modules/
+
+# Package lock files (keep package-lock.json but ignore yarn.lock)
+yarn.lock
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Xcode user-specific files
+*.xcuserstate
+*.xcuserdatad/
+project.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# Temporary files
+*.tmp
+*.temp
+*~
+.#*
+
+# Editor backup files
+*~
+.#*
+#*#
+.swp
+.swo
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

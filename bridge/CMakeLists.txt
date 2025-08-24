@@ -17,27 +17,26 @@ set_target_properties(gopher_bridge PROPERTIES
 target_include_directories(gopher_bridge PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  ${FFMPEG_INCLUDE_DIRS}
-  ${CMAKE_SOURCE_DIR}/core/include
+  ${CMAKE_SOURCE_DIR}/engine/include
 )
 
-# Link with core library
-target_link_libraries(gopher_bridge PRIVATE gopher_core)
+# Link libraries
+target_link_libraries(gopher_bridge PUBLIC
+  gopher_core
+)
 
 # macOS specific settings
 if(APPLE)
   target_link_libraries(gopher_bridge PRIVATE
     "-framework Foundation"
     "-framework CoreFoundation"
-    "-framework AudioToolbox"
-    "-framework VideoToolbox"
-  )
-  
-  # Set Objective-C++ standard
-  set_target_properties(gopher_bridge PROPERTIES
-    COMPILE_FLAGS "-x objective-c++"
   )
 endif()
+
+# Set Objective-C++ compile flags
+set_target_properties(gopher_bridge PROPERTIES
+  COMPILE_FLAGS "-x objective-c++"
+)
 
 # Install target
 install(TARGETS gopher_bridge

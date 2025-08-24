@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gopher Network</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <main class="container">
+      <header>
+        <h1>🐹 Gopher Network</h1>
+        <p class="subtitle">Cross-platform peer-to-peer video calling</p>
+      </header>
+
+      <section class="status">
+        <div class="status-indicator">
+          <span class="indicator" id="connection-status"></span>
+          <span id="status-text">Connecting...</span>
+        </div>
+        <button id="refresh-btn" class="btn btn-secondary">Refresh Network</button>
+      </section>
+
+      <section class="peers">
+        <h2>Available People</h2>
+        <div id="peers-list" class="peers-grid">
+          <div class="loading">Loading network peers...</div>
+        </div>
+      </section>
+
+      <section class="notifications" id="notification-area">
+        <!-- Notifications will appear here -->
+      </section>
+    </main>
+  </body>
+</html>

@@ -6,11 +6,10 @@ set(DAEMON_SOURCES
 # Create daemon executable
 add_executable(gopherd ${DAEMON_SOURCES})
 
-# Link with core library
-target_link_libraries(gopherd PRIVATE gopher_core ${FFMPEG_LIBRARIES})
-
-# Set library search path
-target_link_directories(gopherd PRIVATE ${FFMPEG_LIBRARY_DIRS})
+# Link with core library (dependencies are inherited)
+target_link_libraries(gopherd PRIVATE 
+  gopher_core
+)
 
 # Include directories
 target_include_directories(gopherd PRIVATE
