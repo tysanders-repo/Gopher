@@ -3,9 +3,6 @@
 
 #include <iostream>
 #include <vector>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -13,23 +10,23 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
 
-extern std::atomic<bool> recv_thread_should_stop_;
+class GopherClient;
 
 class FFmpegReceiver {
-private:
-    int sock = -1;
-    AVCodecContext* decoder_ctx = nullptr;
-    SwsContext* sws_ctx = nullptr;
-
 public:
-    bool initialize(int existing_sock_fd, uint16_t listen_port);
+    bool initialize(int existing_sock_fd, uint16_t listen_port, GopherClient& client);
     void run();
     void processVideoPacket(const std::vector<uint8_t>& data);
     ~FFmpegReceiver();
+
+private:
+    GopherClient* client_{nullptr};
+    int sock{-1};
+    AVCodecContext* decoder_ctx{nullptr};
+    SwsContext* sws_ctx{nullptr};
 };
 
 #endif // FFMPEG_RECEIVER_HPP

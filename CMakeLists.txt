@@ -70,8 +70,7 @@ endif()
 
 if(BUILD_TESTS)
   enable_testing()
-  # Tests directory is empty for now
-  # add_subdirectory(engine/tests)
+  add_subdirectory(engine/tests)
 endif()
 
 # ---- installation/exports (use a single export set name)

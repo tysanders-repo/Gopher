@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "m*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── C++ build + tests ───────────────────────────────────────────────────────
+  cpp:
+    name: C++ build & test
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_BRIDGE=OFF
+
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # ── clang-format lint ───────────────────────────────────────────────────────
+  clang-format:
+    name: clang-format
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: brew install clang-format
+
+      - name: Check formatting
+        run: |
+          find engine/src engine/include -name '*.cpp' -o -name '*.hpp' | \
+            xargs clang-format --dry-run --Werror
+
+  # ── Rust / Tauri ────────────────────────────────────────────────────────────
+  tauri:
+    name: Tauri build (rustfmt + cargo check)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm install
+        working-directory: app
+        run: npm ci
+
+      - name: rustfmt check
+        working-directory: app/src-tauri
+        run: cargo fmt -- --check
+
+      - name: cargo check
+        working-directory: app/src-tauri
+        run: cargo check

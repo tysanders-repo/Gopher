@@ -1,10 +1,10 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::net::{TcpStream, UdpSocket};
 use std::io::{Read, Write};
+use std::net::{TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use anyhow::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Gopher {
@@ -44,25 +44,25 @@ impl GopherBroadcaster {
 
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         socket.set_broadcast(true)?;
-        
+
         let message = format!("name:{};ip:{};port:{}", self.name, self.ip, self.port);
         let running_clone = Arc::clone(&self.running);
-        
+
         thread::spawn(move || {
             let broadcast_addr = format!("255.255.255.255:{}", BROADCAST_PORT);
-            
+
             while *running_clone.lock().unwrap() {
                 if let Err(e) = socket.send_to(message.as_bytes(), &broadcast_addr) {
                     eprintln!("Failed to send broadcast: {}", e);
                 }
-                
+
                 thread::sleep(Duration::from_secs(5)); // Broadcast every 5 seconds
             }
         });
-        
+
         Ok(())
     }
-    
+
     fn stop(&self) {
         let mut running = self.running.lock().unwrap();
         *running = false;
@@ -81,20 +81,23 @@ async fn initialize_gopher(name: String) -> Result<String, String> {
 
         // Get local IP address
         let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
-        
-        // For now, use a random port. In a full implementation, this would 
+
+        // For now, use a random port. In a full implementation, this would
         // create a listening socket and get the actual port
         let port = 12345; // TODO: Integrate with C++ engine to get actual listening port
-        
+
         let broadcaster = GopherBroadcaster::new(name.clone(), local_ip.clone(), port);
-        
+
         if let Err(e) = broadcaster.start() {
             return Err(format!("Failed to start broadcaster: {}", e));
         }
-        
+
         BROADCASTER = Some(broadcaster);
-        
-        Ok(format!("Initialized Gopher '{}' at {}:{}", name, local_ip, port))
+
+        Ok(format!(
+            "Initialized Gopher '{}' at {}:{}",
+            name, local_ip, port
+        ))
     }
 }
 
@@ -135,7 +138,7 @@ async fn send_notification(title: String, body: String) -> Result<(), String> {
 
 fn get_local_ip() -> Option<String> {
     use std::net::{ToSocketAddrs, UdpSocket};
-    
+
     // Try to connect to a remote address to determine local IP
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -146,21 +149,24 @@ fn get_local_ip() -> Option<String> {
 async fn get_gophers_from_daemon() -> Result<Vec<Gopher>> {
     use std::io::BufRead;
     use std::io::BufReader;
-    
-    println!("Attempting to connect to daemon at {}:{}", DAEMON_HOST, DAEMON_PORT);
-    
+
+    println!(
+        "Attempting to connect to daemon at {}:{}",
+        DAEMON_HOST, DAEMON_PORT
+    );
+
     let mut stream = TcpStream::connect(format!("{}:{}", DAEMON_HOST, DAEMON_PORT))?;
     println!("Connected to daemon successfully");
-    
+
     // Send empty request to get all gophers
     stream.write_all(b"\n")?;
     println!("Sent request to daemon");
-    
+
     // Use BufReader to read line by line instead of waiting for connection close
     let mut reader = BufReader::new(&mut stream);
     let mut response = String::new();
     let mut gophers = Vec::new();
-    
+
     // Read lines until we get an empty line or connection closes
     loop {
         let mut line = String::new();
@@ -171,10 +177,10 @@ async fn get_gophers_from_daemon() -> Result<Vec<Gopher>> {
                 if line.is_empty() {
                     break; // Empty line signals end
                 }
-                
+
                 response.push_str(line);
                 response.push('\n');
-                
+
                 // Parse the line immediately
                 let parts: Vec<&str> = line.split(',').collect();
                 if parts.len() == 3 {
@@ -193,7 +199,7 @@ async fn get_gophers_from_daemon() -> Result<Vec<Gopher>> {
             }
         }
     }
-    
+
     println!("Received response from daemon: '{}'", response);
     println!("Parsed {} gophers from daemon response", gophers.len());
     Ok(gophers)
