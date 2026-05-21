@@ -1,6 +1,8 @@
 #include "gopher/ffmpeg_sender.hpp"
 #include "gopher/gopher_client_lib.hpp"
+#include "gopher/packet.hpp"
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 
 extern "C" {
@@ -95,7 +97,7 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port, Go
     encoder_ctx->framerate = {30, 1};
     encoder_ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
     encoder_ctx->bit_rate  = 2000000;
-    encoder_ctx->gop_size  = 30;
+    encoder_ctx->gop_size  = 15;  // 0.5s IDR cadence → faster recovery from loss
     encoder_ctx->max_b_frames = 0;
 
     AVDictionary* enc_opts = nullptr;
@@ -181,7 +183,8 @@ void FFmpegSender::run() {
                         ret = avcodec_send_frame(encoder_ctx, yuv_frame);
                         if (ret >= 0) {
                             while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
-                                sendPacket(output_pkt, 1);
+                                const bool is_key = (output_pkt->flags & AV_PKT_FLAG_KEY) != 0;
+                                sendPacket(output_pkt, gopher::PKT_VIDEO, is_key);
                                 av_packet_unref(output_pkt);
                             }
                         }
@@ -227,7 +230,8 @@ void FFmpegSender::run() {
     // Flush encoder
     avcodec_send_frame(encoder_ctx, nullptr);
     while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
-        sendPacket(output_pkt, 1);
+        const bool is_key = (output_pkt->flags & AV_PKT_FLAG_KEY) != 0;
+        sendPacket(output_pkt, gopher::PKT_VIDEO, is_key);
         av_packet_unref(output_pkt);
     }
 
@@ -238,26 +242,45 @@ void FFmpegSender::run() {
     av_packet_free(&output_pkt);
 }
 
-void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type) {
-    auto     now     = std::chrono::steady_clock::now();
-    uint64_t ts_us   = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    uint64_t net_ts  = htonll(ts_us);
+void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type, bool is_keyframe) {
+    using namespace gopher;
 
-    uint32_t payload_len = pkt->size;
-    uint32_t total_size  = payload_len + 1 + sizeof(net_ts);
-    uint32_t net_size    = htonl(total_size);
+    const uint64_t ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const uint64_t net_ts = htonll(ts_us);
+    const uint32_t seq    = ++frame_seq_;
+    const uint32_t net_seq = htonl(seq);
 
-    sendto(sock, &net_size, sizeof(net_size), 0, (sockaddr*)&dest_addr, sizeof(dest_addr));
-    sendto(sock, &type,     sizeof(type),     0, (sockaddr*)&dest_addr, sizeof(dest_addr));
-    sendto(sock, &net_ts,   sizeof(net_ts),   0, (sockaddr*)&dest_addr, sizeof(dest_addr));
+    uint8_t buf[MAX_DATAGRAM];
+    const std::size_t total = pkt->size;
+    std::size_t offset      = 0;
+    uint16_t    frag_idx    = 0;
 
-    const size_t MAX_CHUNK = 1400;
-    size_t sent = 0;
-    while (sent < payload_len) {
-        size_t chunk = std::min(MAX_CHUNK, (size_t)(payload_len - sent));
-        sendto(sock, pkt->data + sent, chunk, 0, (sockaddr*)&dest_addr, sizeof(dest_addr));
-        sent += chunk;
-    }
+    do {
+        const std::size_t remaining = total - offset;
+        const std::size_t chunk     = std::min(remaining, MAX_PAYLOAD);
+
+        uint8_t flags = 0;
+        if (offset == 0)               flags |= FLAG_START;
+        if (offset + chunk >= total)   flags |= FLAG_END;
+        if (is_keyframe && offset == 0) flags |= FLAG_KEY;
+
+        PacketHeader hdr{};
+        hdr.type         = type;
+        hdr.flags        = flags;
+        hdr.fragment_idx = htons(frag_idx);
+        hdr.frame_seq    = net_seq;
+        hdr.timestamp_us = net_ts;
+
+        std::memcpy(buf, &hdr, sizeof(hdr));
+        if (chunk > 0) std::memcpy(buf + sizeof(hdr), pkt->data + offset, chunk);
+
+        sendto(sock, buf, sizeof(hdr) + chunk, 0,
+               (sockaddr*)&dest_addr, sizeof(dest_addr));
+
+        offset += chunk;
+        frag_idx++;
+    } while (offset < total);
 }
 
 FFmpegSender::~FFmpegSender() {

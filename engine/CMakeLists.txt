@@ -2,6 +2,7 @@
 set(CORE_SOURCES
   src/ffmpeg_receiver.cpp
   src/ffmpeg_sender.cpp
+  src/frame_reassembler.cpp
   src/gopher_client_lib.cpp
 )
 

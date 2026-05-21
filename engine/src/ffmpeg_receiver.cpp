@@ -1,5 +1,10 @@
 #include "gopher/ffmpeg_receiver.hpp"
+#include "gopher/frame_reassembler.hpp"
 #include "gopher/gopher_client_lib.hpp"
+#include "gopher/packet.hpp"
+
+#include <cstring>
+#include <iostream>
 
 bool FFmpegReceiver::initialize(int socket_fd, uint16_t /*listen_port*/, GopherClient& client) {
     client_ = &client;
@@ -25,42 +30,34 @@ bool FFmpegReceiver::initialize(int socket_fd, uint16_t /*listen_port*/, GopherC
 }
 
 void FFmpegReceiver::run() {
-    uint8_t recv_buffer[2048];
+    uint8_t buf[gopher::MAX_DATAGRAM + 64];
+    gopher::FrameReassembler reasm;
+    gopher::FrameReassembler::Output frame;
+
+    // Wait for the first keyframe before feeding the decoder anything —
+    // otherwise the H.264 decoder spews "non-existing PPS 0 referenced" until
+    // it sees an IDR. We can drop early P-frames safely on UDP.
+    bool seen_keyframe = false;
 
     while (!client_->recv_should_stop_) {
-        uint32_t net_size;
-        ssize_t n = recvfrom(sock, &net_size, sizeof(net_size), 0, nullptr, nullptr);
-        if (n != sizeof(net_size)) {
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-                continue;
-            else
-                break;
-        }
-        uint32_t total_size = ntohl(net_size);
-
-        uint8_t packet_type;
-        recvfrom(sock, &packet_type, sizeof(packet_type), 0, nullptr, nullptr);
-
-        uint64_t net_ts;
-        recvfrom(sock, &net_ts, sizeof(net_ts), 0, nullptr, nullptr);
-
-        constexpr uint32_t header_overhead = 1 + sizeof(net_ts);
-        if (total_size < header_overhead || total_size > (1 << 24)) break;
-
-        uint32_t payload_len = total_size - header_overhead;
-
-        std::vector<uint8_t> payload(payload_len);
-        size_t got = 0;
-        while (got < payload_len) {
-            int r = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0, nullptr, nullptr);
-            if (r <= 0) break;
-            size_t copy_sz = std::min((size_t)r, payload_len - got);
-            std::memcpy(payload.data() + got, recv_buffer, copy_sz);
-            got += copy_sz;
+        ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
+        if (n <= 0) {
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+            break;
         }
 
-        if (packet_type == 1)
-            processVideoPacket(payload);
+        using R = gopher::FrameReassembler::Result;
+        const R r = reasm.ingest(buf, (std::size_t)n, frame);
+        if (r != R::FrameReady) continue;
+
+        if (frame.type != gopher::PKT_VIDEO) continue;
+
+        if (!seen_keyframe) {
+            if (!frame.is_keyframe) continue;
+            seen_keyframe = true;
+        }
+
+        processVideoPacket(frame.data);
     }
 }
 
