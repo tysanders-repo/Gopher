@@ -16,35 +16,50 @@ struct VideoPacket {
 bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port, GopherClient& client) {
     client_ = &client;
     avdevice_register_all();
+    avformat_network_init();
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(dest_port);
     inet_pton(AF_INET, dest_ip.c_str(), &dest_addr.sin_addr);
 
-#if defined(__APPLE__)
-    const AVInputFormat* input_fmt = av_find_input_format("avfoundation");
-#elif defined(_WIN32)
-    const AVInputFormat* input_fmt = av_find_input_format("dshow");
-#else
-    const AVInputFormat* input_fmt = av_find_input_format("v4l2");
-#endif
+    // GOPHER_TEST_PATTERN, if set, is a libavfilter source spec (e.g.
+    // "testsrc2=size=1280x720:rate=30" or "mandelbrot=size=1280x720:rate=30").
+    // When present we skip the camera entirely — useful for CI, headless dev,
+    // and any environment without AVFoundation TCC + run-loop context.
+    const char* test_pattern = std::getenv("GOPHER_TEST_PATTERN");
 
+    const AVInputFormat* input_fmt = nullptr;
+    const char* input_url = nullptr;
     AVDictionary* options = nullptr;
-    av_dict_set(&options, "video_size", "1280x720", 0);
-    av_dict_set(&options, "framerate", "30", 0);
-    av_dict_set(&options, "pixel_format", "uyvy422", 0);
 
-    const char* dev = std::getenv("GOPHER_AVFOUNDATION_DEVICE");
+    if (test_pattern && test_pattern[0] != '\0') {
+        input_fmt = av_find_input_format("lavfi");
+        input_url = test_pattern;
+        std::cerr << "[sender] test pattern: " << test_pattern << std::endl;
+    } else {
 #if defined(__APPLE__)
-    const char* camera_url = (dev && dev[0] != '\0') ? dev : "0:";
+        input_fmt = av_find_input_format("avfoundation");
+#elif defined(_WIN32)
+        input_fmt = av_find_input_format("dshow");
 #else
-    (void)dev;
-    const char* camera_url = "0:";
+        input_fmt = av_find_input_format("v4l2");
 #endif
+        av_dict_set(&options, "video_size", "1280x720", 0);
+        av_dict_set(&options, "framerate", "30", 0);
+        av_dict_set(&options, "pixel_format", "uyvy422", 0);
 
-    if (avformat_open_input(&client_->input_ctx_, camera_url, input_fmt, &options) < 0) {
-        std::cerr << "Failed to open camera" << std::endl;
+        const char* dev = std::getenv("GOPHER_AVFOUNDATION_DEVICE");
+#if defined(__APPLE__)
+        input_url = (dev && dev[0] != '\0') ? dev : "0:";
+#else
+        (void)dev;
+        input_url = "0:";
+#endif
+    }
+
+    if (avformat_open_input(&client_->input_ctx_, input_url, input_fmt, &options) < 0) {
+        std::cerr << "Failed to open input '" << input_url << "'" << std::endl;
         return false;
     }
 
@@ -68,9 +83,9 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port, Go
     const AVCodec* encoder = avcodec_find_encoder_by_name("h264_videotoolbox");
     if (!encoder) {
         encoder = avcodec_find_encoder(AV_CODEC_ID_H264);
-        std::cout << "Using software encoder" << std::endl;
+        std::cerr << "Using software encoder" << std::endl;
     } else {
-        std::cout << "Using hardware encoder (VideoToolbox)" << std::endl;
+        std::cerr << "Using hardware encoder (VideoToolbox)" << std::endl;
     }
 
     encoder_ctx = avcodec_alloc_context3(encoder);

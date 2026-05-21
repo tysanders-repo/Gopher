@@ -2,9 +2,12 @@
 // receive on the same bound socket, decode, display via SDL (main thread).
 #include "gopher/gopher_client_lib.hpp"
 
+#include <cstdio>
 #include <iostream>
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
   GopherClient client;
   client.enable_dev_mode(true);
 

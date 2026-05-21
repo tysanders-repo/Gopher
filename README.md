@@ -60,9 +60,23 @@ cargo tauri dev
 ## Running tests
 
 ```bash
-cmake --build build --target gopher_self_loopback_test gopher_dual_peer_test
 ctest --test-dir build --output-on-failure
 ```
+
+### Dual-peer integration test
+
+`scripts/dual-peer` launches two engine instances against each other, prefixes
+their output `[A]` / `[B]`, and cleans up both on Ctrl+C:
+
+```bash
+scripts/dual-peer --test-pattern     # synthetic lavfi sources — no camera needed
+scripts/dual-peer                    # real cameras (peer A → device 0:, peer B → device 1:)
+scripts/dual-peer --ports 51200 51201
+```
+
+The `--test-pattern` mode is the one that works in headless / CI / non-interactive
+contexts — AVFoundation cameras need an active `NSRunLoop` and TCC permission
+that aren't available in those environments.
 
 ## Status
 

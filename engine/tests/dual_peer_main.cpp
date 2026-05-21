@@ -8,6 +8,7 @@
 // for one side, e.g. GOPHER_AVFOUNDATION_DEVICE=1: ./gopher_dual_peer_test 50101 50100
 #include "gopher/gopher_client_lib.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -33,6 +34,9 @@ static bool parse_u16(const char* s, uint16_t& out) {
 }
 
 int main(int argc, char** argv) {
+  // Line-buffer stdout so logs flush promptly when piped to a tee/prefix wrapper.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
   if (argc < 3 || argc > 4) {
     usage(argv[0]);
     return 1;

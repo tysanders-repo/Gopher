@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Launch two gopher_dual_peer_test instances against each other.
+#
+# Output from each peer is prefixed [A] / [B] in different colors.
+# Ctrl+C cleans up both processes.
+#
+# Examples:
+#   scripts/dual-peer                       # cameras (needs interactive TTY)
+#   scripts/dual-peer --test-pattern        # synthetic lavfi sources
+#   scripts/dual-peer --ports 51200 51201   # pick different UDP ports
+#   scripts/dual-peer --no-build            # skip cmake --build
+
+set -euo pipefail
+
+PORT_A=51100
+PORT_B=51101
+MODE="cameras"
+BUILD=1
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--test-pattern | --cameras] [--ports A B] [--no-build]
+
+  --test-pattern    use synthetic lavfi sources (no camera/TCC needed).
+                    Peer A → testsrc2, peer B → mandelbrot.
+  --cameras         use AVFoundation cameras (default).
+                    Peer A → device 0:, peer B → device 1:.
+  --ports A B       UDP ports (default 51100 51101).
+  --no-build        skip cmake --build before launching.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --test-pattern) MODE="test-pattern"; shift ;;
+    --cameras)      MODE="cameras"; shift ;;
+    --ports)        PORT_A="${2:?}"; PORT_B="${3:?}"; shift 3 ;;
+    --no-build)     BUILD=0; shift ;;
+    -h|--help)      usage; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_DIR="$REPO_ROOT/build"
+BIN="$BUILD_DIR/bin/gopher_dual_peer_test"
+
+# Always start clean — kill any leftover instances from a previous run.
+pkill -9 -f gopher_dual_peer_test 2>/dev/null || true
+
+if [[ $BUILD -eq 1 ]]; then
+  if [[ ! -d "$BUILD_DIR" ]]; then
+    echo "==> configuring (build dir missing)"
+    cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug -DBUILD_BRIDGE=OFF >/dev/null
+  fi
+  echo "==> building gopher_dual_peer_test"
+  cmake --build "$BUILD_DIR" --target gopher_dual_peer_test -j"$(sysctl -n hw.ncpu)" >/dev/null
+fi
+
+if [[ ! -x "$BIN" ]]; then
+  echo "FATAL: $BIN not found. Drop --no-build or run cmake first." >&2
+  exit 1
+fi
+
+CYAN=$'\033[36m'
+MAGENTA=$'\033[35m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+
+# Cleanup on any exit (Ctrl+C, error, normal completion).
+trap 'echo; echo "==> stopping peers"; pkill -9 -f gopher_dual_peer_test 2>/dev/null || true' EXIT
+
+prefix() {
+  local color=$1 tag=$2
+  # Drop the noisy SDL2 duplicate-class warnings; keep everything else.
+  awk -v c="$color" -v t="$tag" -v r="$RESET" -v d="$DIM" '
+    /^objc\[.*\]: Class .* is implemented in both/ { next }
+    /implemented in both/ && /may cause spurious casting/ { next }
+    { printf "%s[%s]%s %s\n", c, t, r, $0; fflush() }
+  '
+}
+
+echo "==> mode: $MODE   ports: A=$PORT_A B=$PORT_B"
+echo "==> press Ctrl+C to stop"
+
+case "$MODE" in
+  test-pattern)
+    GOPHER_TEST_PATTERN="testsrc2=size=1280x720:rate=30" \
+      "$BIN" "$PORT_A" "$PORT_B" 2>&1 | prefix "$CYAN" "A" &
+    sleep 1
+    GOPHER_TEST_PATTERN="mandelbrot=size=1280x720:rate=30" \
+      "$BIN" "$PORT_B" "$PORT_A" 2>&1 | prefix "$MAGENTA" "B" &
+    ;;
+  cameras)
+    "$BIN" "$PORT_A" "$PORT_B" 2>&1 | prefix "$CYAN" "A" &
+    sleep 1
+    GOPHER_AVFOUNDATION_DEVICE="1:" \
+      "$BIN" "$PORT_B" "$PORT_A" 2>&1 | prefix "$MAGENTA" "B" &
+    ;;
+esac
+
+wait

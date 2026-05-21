@@ -68,6 +68,10 @@ bool GopherClient::create_listening_socket(uint16_t& out_port) {
     listening_socket_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (listening_socket_ < 0) return false;
 
+    // Allow immediate rebind after an unclean exit (kill -9, crash, etc.)
+    int yes = 1;
+    setsockopt(listening_socket_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(out_port);
@@ -167,7 +171,7 @@ bool GopherClient::start_call(const std::string& target_ip, uint16_t target_port
     sender_thread_   = std::thread(&GopherClient::ffmpeg_sending_thread, this, target_ip, target_port);
     receiver_thread_ = std::thread(&GopherClient::ffmpeg_listener_thread, this);
 
-    std::cout << "Starting call to " << target_ip << ":" << target_port << std::endl;
+    std::cerr << "Starting call to " << target_ip << ":" << target_port << std::endl;
     return true;
 }
 
@@ -273,7 +277,7 @@ void GopherClient::ffmpeg_sending_thread(const std::string& ip, uint16_t port) {
     if (sender.initialize(ip, port, *this)) {
         sender.run();
     } else {
-        std::cerr << "Failed to initialize FFmpeg sender" << std::endl;
+        std::cerr << "[sender] init failed" << std::endl;
         shutdown();
     }
 }
@@ -283,7 +287,7 @@ void GopherClient::ffmpeg_listener_thread() {
     if (receiver.initialize(listening_socket_, listening_port_, *this)) {
         receiver.run();
     } else {
-        std::cerr << "Failed to initialize FFmpeg receiver" << std::endl;
+        std::cerr << "[receiver] init failed" << std::endl;
         shutdown();
     }
 }
