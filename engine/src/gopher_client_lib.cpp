@@ -72,6 +72,10 @@ bool GopherClient::create_listening_socket(uint16_t& out_port) {
     int yes = 1;
     setsockopt(listening_socket_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
+    // Big receive buffer — IDR keyframes burst into 100+ fragments.
+    int rbuf = 4 * 1024 * 1024;
+    setsockopt(listening_socket_, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
+
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(out_port);

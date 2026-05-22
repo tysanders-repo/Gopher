@@ -25,6 +25,11 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port, Go
     dest_addr.sin_port = htons(dest_port);
     inet_pton(AF_INET, dest_ip.c_str(), &dest_addr.sin_addr);
 
+    // Absorb encoder output bursts (a single IDR is easily 100KB+).
+    // macOS silently caps at kern.ipc.maxsockbuf; that's fine.
+    int sbuf = 4 * 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sbuf, sizeof(sbuf));
+
     // GOPHER_TEST_PATTERN, if set, is a libavfilter source spec (e.g.
     // "testsrc2=size=1280x720:rate=30" or "mandelbrot=size=1280x720:rate=30").
     // When present we skip the camera entirely — useful for CI, headless dev,
@@ -127,13 +132,11 @@ bool FFmpegSender::initialize(const std::string& dest_ip, uint16_t dest_port, Go
 }
 
 void FFmpegSender::run() {
-    const double base_fps = 30.0;
-    double current_fps = base_fps;
-    auto frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
-
-    auto last_stats_time = std::chrono::steady_clock::now();
-    int frames_sent   = 0;
-    int dropped_frames = 0;
+    // Hard 30 fps capture cadence. Eliminates the lavfi runaway problem (the
+    // synthetic sources have no internal rate limit) and gives consistent
+    // wall-clock spacing for the receiver-side latency CSV.
+    constexpr auto target_period = std::chrono::microseconds(1'000'000 / 30);
+    auto next_capture = std::chrono::steady_clock::now();
 
     AVPacket* input_pkt  = av_packet_alloc();
     AVPacket* output_pkt = av_packet_alloc();
@@ -151,87 +154,63 @@ void FFmpegSender::run() {
     avcodec_parameters_to_context(decoder_ctx, client_->input_ctx_->streams[video_stream_idx]->codecpar);
     avcodec_open2(decoder_ctx, decoder, nullptr);
 
-    int64_t frame_count = 0;
-    auto last_frame_time = std::chrono::steady_clock::now();
+    int64_t pts_counter = 0;
 
     while (!client_->send_should_stop_) {
-        auto loop_start = std::chrono::steady_clock::now();
-        bool frame_processed = false;
+        // Pace the capture loop.
+        auto now = std::chrono::steady_clock::now();
+        if (now < next_capture) {
+            std::this_thread::sleep_for(next_capture - now);
+        }
+        next_capture += target_period;
+        // If we fell more than 5 frames behind (e.g. encoder stalled), resync
+        // rather than spinning trying to catch up.
+        if (std::chrono::steady_clock::now() - next_capture > target_period * 5) {
+            next_capture = std::chrono::steady_clock::now() + target_period;
+        }
 
         int ret = av_read_frame(client_->input_ctx_, input_pkt);
-        if (ret < 0 || client_->send_should_stop_) {
+        if (ret < 0) {
             if (ret == AVERROR_EOF) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            av_packet_unref(input_pkt);
+            continue;
+        }
+        if (input_pkt->stream_index != video_stream_idx) {
+            av_packet_unref(input_pkt);
             continue;
         }
 
-        if (input_pkt->stream_index == video_stream_idx) {
-            ret = avcodec_send_packet(decoder_ctx, input_pkt);
-            if (ret >= 0) {
-                ret = avcodec_receive_frame(decoder_ctx, raw_frame);
-                if (ret >= 0) {
-                    auto current_time   = std::chrono::steady_clock::now();
-                    auto time_since_last = current_time - last_frame_time;
+        // capture_ts is the moment the frame becomes ours — used end-to-end
+        // for the latency CSV. Set once and propagated to every fragment.
+        const uint64_t capture_ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
 
-                    if (time_since_last >= frame_duration * 0.8) {
-                        sws_scale(sws_ctx,
-                                  raw_frame->data, raw_frame->linesize, 0, raw_frame->height,
-                                  yuv_frame->data, yuv_frame->linesize);
+        ret = avcodec_send_packet(decoder_ctx, input_pkt);
+        if (ret >= 0 && avcodec_receive_frame(decoder_ctx, raw_frame) >= 0) {
+            sws_scale(sws_ctx,
+                      raw_frame->data, raw_frame->linesize, 0, raw_frame->height,
+                      yuv_frame->data, yuv_frame->linesize);
+            yuv_frame->pts = pts_counter++;
 
-                        yuv_frame->pts = frame_count++;
-
-                        ret = avcodec_send_frame(encoder_ctx, yuv_frame);
-                        if (ret >= 0) {
-                            while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
-                                const bool is_key = (output_pkt->flags & AV_PKT_FLAG_KEY) != 0;
-                                sendPacket(output_pkt, gopher::PKT_VIDEO, is_key);
-                                av_packet_unref(output_pkt);
-                            }
-                        }
-
-                        last_frame_time  = current_time;
-                        frame_processed  = true;
-                        frames_sent++;
-                    } else {
-                        dropped_frames++;
-                    }
+            if (avcodec_send_frame(encoder_ctx, yuv_frame) >= 0) {
+                while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
+                    const bool is_key = (output_pkt->flags & AV_PKT_FLAG_KEY) != 0;
+                    sendPacket(output_pkt, gopher::PKT_VIDEO, is_key, capture_ts_us);
+                    av_packet_unref(output_pkt);
                 }
             }
         }
 
         av_packet_unref(input_pkt);
-
-        if (frame_processed) {
-            auto processing_time = std::chrono::steady_clock::now() - loop_start;
-            auto remaining_time  = frame_duration - processing_time;
-            if (remaining_time > std::chrono::microseconds(0) &&
-                remaining_time < std::chrono::milliseconds(50)) {
-                std::this_thread::sleep_for(remaining_time);
-            }
-        }
-
-        auto current_time = std::chrono::steady_clock::now();
-        if (current_time - last_stats_time >= std::chrono::seconds(1)) {
-            double drop_rate = static_cast<double>(dropped_frames) / (frames_sent + dropped_frames);
-            if (drop_rate > 0.1) {
-                current_fps   = std::max(15.0, current_fps * 0.9);
-                frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
-                printf("Adapted FPS to %.1f (drop rate: %.1f%%)\n", current_fps, drop_rate * 100);
-            } else if (drop_rate < 0.02 && current_fps < base_fps) {
-                current_fps   = std::min(base_fps, current_fps * 1.05);
-                frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000 / current_fps));
-            }
-            frames_sent    = 0;
-            dropped_frames = 0;
-            last_stats_time = current_time;
-        }
     }
 
-    // Flush encoder
+    // Flush encoder.
     avcodec_send_frame(encoder_ctx, nullptr);
+    const uint64_t flush_ts = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     while (avcodec_receive_packet(encoder_ctx, output_pkt) >= 0) {
         const bool is_key = (output_pkt->flags & AV_PKT_FLAG_KEY) != 0;
-        sendPacket(output_pkt, gopher::PKT_VIDEO, is_key);
+        sendPacket(output_pkt, gopher::PKT_VIDEO, is_key, flush_ts);
         av_packet_unref(output_pkt);
     }
 
@@ -242,45 +221,52 @@ void FFmpegSender::run() {
     av_packet_free(&output_pkt);
 }
 
-void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type, bool is_keyframe) {
+void FFmpegSender::sendPacket(AVPacket* pkt, uint8_t type, bool is_keyframe,
+                              uint64_t capture_ts_us) {
     using namespace gopher;
 
-    const uint64_t ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    const uint64_t net_ts = htonll(ts_us);
-    const uint32_t seq    = ++frame_seq_;
-    const uint32_t net_seq = htonl(seq);
+    const std::size_t total = static_cast<std::size_t>(pkt->size);
+    if (total == 0) return;
+
+    const std::size_t n_frags = (total + MAX_PAYLOAD - 1) / MAX_PAYLOAD;
+    if (n_frags > 0xFFFF) {
+        std::cerr << "[sender] frame too large to fragment (" << total << "B)\n";
+        return;
+    }
+
+    const uint32_t frame_id     = ++frame_id_counter_;
+    const uint32_t net_frame_id = htonl(frame_id);
+    const uint16_t net_frag_ct  = htons(static_cast<uint16_t>(n_frags));
+    const uint64_t net_ts       = htonll(capture_ts_us);
+    const uint16_t net_flags    = htons(is_keyframe ? FLAG_KEY : 0);
 
     uint8_t buf[MAX_DATAGRAM];
-    const std::size_t total = pkt->size;
-    std::size_t offset      = 0;
-    uint16_t    frag_idx    = 0;
+    std::size_t offset   = 0;
+    uint16_t    frag_idx = 0;
 
-    do {
-        const std::size_t remaining = total - offset;
-        const std::size_t chunk     = std::min(remaining, MAX_PAYLOAD);
-
-        uint8_t flags = 0;
-        if (offset == 0)               flags |= FLAG_START;
-        if (offset + chunk >= total)   flags |= FLAG_END;
-        if (is_keyframe && offset == 0) flags |= FLAG_KEY;
+    while (offset < total) {
+        const std::size_t chunk = std::min(MAX_PAYLOAD, total - offset);
 
         PacketHeader hdr{};
-        hdr.type         = type;
-        hdr.flags        = flags;
-        hdr.fragment_idx = htons(frag_idx);
-        hdr.frame_seq    = net_seq;
-        hdr.timestamp_us = net_ts;
+        hdr.version       = WIRE_VERSION;
+        hdr.type          = type;
+        hdr.flags         = net_flags;
+        hdr.stream_id     = htons(0);
+        hdr.frag_count    = net_frag_ct;
+        hdr.frame_id      = net_frame_id;
+        hdr.frag_id       = htons(frag_idx);
+        hdr.payload_len   = htons(static_cast<uint16_t>(chunk));
+        hdr.capture_ts_us = net_ts;
 
         std::memcpy(buf, &hdr, sizeof(hdr));
-        if (chunk > 0) std::memcpy(buf + sizeof(hdr), pkt->data + offset, chunk);
+        std::memcpy(buf + sizeof(hdr), pkt->data + offset, chunk);
 
         sendto(sock, buf, sizeof(hdr) + chunk, 0,
                (sockaddr*)&dest_addr, sizeof(dest_addr));
 
-        offset += chunk;
-        frag_idx++;
-    } while (offset < total);
+        offset   += chunk;
+        frag_idx += 1;
+    }
 }
 
 FFmpegSender::~FFmpegSender() {

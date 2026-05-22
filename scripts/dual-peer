@@ -16,16 +16,20 @@ PORT_A=51100
 PORT_B=51101
 MODE="cameras"
 BUILD=1
+CSV_DIR=""
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--test-pattern | --cameras] [--ports A B] [--no-build]
+Usage: $(basename "$0") [--test-pattern | --cameras] [--ports A B]
+                       [--csv-dir DIR] [--no-build]
 
   --test-pattern    use synthetic lavfi sources (no camera/TCC needed).
                     Peer A → testsrc2, peer B → mandelbrot.
   --cameras         use AVFoundation cameras (default).
                     Peer A → device 0:, peer B → device 1:.
   --ports A B       UDP ports (default 51100 51101).
+  --csv-dir DIR     write per-peer receiver metrics CSV to DIR/recv_a.csv
+                    and DIR/recv_b.csv. Parse with scripts/metrics-summary.
   --no-build        skip cmake --build before launching.
 EOF
 }
@@ -35,11 +39,19 @@ while [[ $# -gt 0 ]]; do
     --test-pattern) MODE="test-pattern"; shift ;;
     --cameras)      MODE="cameras"; shift ;;
     --ports)        PORT_A="${2:?}"; PORT_B="${3:?}"; shift 3 ;;
+    --csv-dir)      CSV_DIR="${2:?}"; shift 2 ;;
     --no-build)     BUILD=0; shift ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ -n "$CSV_DIR" ]]; then
+  mkdir -p "$CSV_DIR"
+  CSV_A="$CSV_DIR/recv_a.csv"
+  CSV_B="$CSV_DIR/recv_b.csv"
+  echo "==> metrics CSVs: $CSV_A , $CSV_B"
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
@@ -86,15 +98,19 @@ echo "==> press Ctrl+C to stop"
 case "$MODE" in
   test-pattern)
     GOPHER_TEST_PATTERN="testsrc2=size=1280x720:rate=30" \
+    GOPHER_METRICS_CSV="${CSV_A:-}" \
       "$BIN" "$PORT_A" "$PORT_B" 2>&1 | prefix "$CYAN" "A" &
     sleep 1
     GOPHER_TEST_PATTERN="mandelbrot=size=1280x720:rate=30" \
+    GOPHER_METRICS_CSV="${CSV_B:-}" \
       "$BIN" "$PORT_B" "$PORT_A" 2>&1 | prefix "$MAGENTA" "B" &
     ;;
   cameras)
-    "$BIN" "$PORT_A" "$PORT_B" 2>&1 | prefix "$CYAN" "A" &
+    GOPHER_METRICS_CSV="${CSV_A:-}" \
+      "$BIN" "$PORT_A" "$PORT_B" 2>&1 | prefix "$CYAN" "A" &
     sleep 1
     GOPHER_AVFOUNDATION_DEVICE="1:" \
+    GOPHER_METRICS_CSV="${CSV_B:-}" \
       "$BIN" "$PORT_B" "$PORT_A" 2>&1 | prefix "$MAGENTA" "B" &
     ;;
 esac

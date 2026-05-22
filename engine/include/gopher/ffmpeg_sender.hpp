@@ -22,7 +22,7 @@ class FFmpegSender {
 public:
     bool initialize(const std::string& dest_ip, uint16_t dest_port, GopherClient& client);
     void run();
-    void sendPacket(AVPacket* pkt, uint8_t type, bool is_keyframe);
+    void sendPacket(AVPacket* pkt, uint8_t type, bool is_keyframe, uint64_t capture_ts_us);
     ~FFmpegSender();
 
 private:
@@ -32,7 +32,7 @@ private:
     AVCodecContext* encoder_ctx{nullptr};
     SwsContext* sws_ctx{nullptr};
     int video_stream_idx{-1};
-    uint32_t frame_seq_{0};
+    uint32_t frame_id_counter_{0};
 };
 
 #endif // FFMPEG_SENDER_HPP

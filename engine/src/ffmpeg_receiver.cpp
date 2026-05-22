@@ -3,8 +3,24 @@
 #include "gopher/gopher_client_lib.hpp"
 #include "gopher/packet.hpp"
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+
+namespace {
+
+// Monotonic microseconds from steady_clock — same domain the sender stamps
+// into capture_ts_us. On a single host (loopback test) this gives a direct
+// end-to-end latency measurement; across two hosts the readings need NTP/PTP
+// alignment before subtracting.
+uint64_t now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+}  // namespace
 
 bool FFmpegReceiver::initialize(int socket_fd, uint16_t /*listen_port*/, GopherClient& client) {
     client_ = &client;
@@ -23,8 +39,13 @@ bool FFmpegReceiver::initialize(int socket_fd, uint16_t /*listen_port*/, GopherC
     }
 
     sock = socket_fd;
-    struct timeval tv{.tv_sec = 0, .tv_usec = 50000};
+    struct timeval tv{.tv_sec = 0, .tv_usec = 50'000};
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Absorb encoder-output bursts of fragments. macOS silently caps at
+    // kern.ipc.maxsockbuf; the actual ceiling is fine for our purposes.
+    int rbuf = 4 * 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
 
     return true;
 }
@@ -34,22 +55,47 @@ void FFmpegReceiver::run() {
     gopher::FrameReassembler reasm;
     gopher::FrameReassembler::Output frame;
 
-    // Wait for the first keyframe before feeding the decoder anything —
-    // otherwise the H.264 decoder spews "non-existing PPS 0 referenced" until
-    // it sees an IDR. We can drop early P-frames safely on UDP.
+    // CSV metrics — optional, controlled by env var.
+    //   GOPHER_METRICS_CSV=/tmp/recv.csv
+    // Columns: frame_id,capture_ts_us,first_arrived_us,complete_us,decode_us,
+    //          frag_total,frag_received,complete
+    std::FILE* csv = nullptr;
+    if (const char* path = std::getenv("GOPHER_METRICS_CSV")) {
+        csv = std::fopen(path, "w");
+        if (csv) {
+            std::fprintf(csv,
+                "frame_id,capture_ts_us,first_arrived_us,complete_us,"
+                "decode_us,frag_total,frag_received,complete\n");
+            std::fflush(csv);
+            std::cerr << "[receiver] metrics CSV: " << path << "\n";
+        } else {
+            std::cerr << "[receiver] could not open CSV at " << path << "\n";
+        }
+    }
+
+    // Wait for the first keyframe before feeding the decoder — otherwise it
+    // spews PPS errors on inter-frames missing the IDR context.
     bool seen_keyframe = false;
+    uint64_t last_sweep_us = now_us();
 
     while (!client_->recv_should_stop_) {
         ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, nullptr, nullptr);
+        const uint64_t arrival_us = now_us();
+
+        // Sweep stale in-flight frames roughly every 50ms.
+        if (arrival_us - last_sweep_us > 50'000) {
+            reasm.sweep_timeouts(arrival_us);
+            last_sweep_us = arrival_us;
+        }
+
         if (n <= 0) {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
             break;
         }
 
         using R = gopher::FrameReassembler::Result;
-        const R r = reasm.ingest(buf, (std::size_t)n, frame);
+        const R r = reasm.ingest(buf, (std::size_t)n, arrival_us, frame);
         if (r != R::FrameReady) continue;
-
         if (frame.type != gopher::PKT_VIDEO) continue;
 
         if (!seen_keyframe) {
@@ -57,8 +103,29 @@ void FFmpegReceiver::run() {
             seen_keyframe = true;
         }
 
+        const uint64_t complete_us = now_us();
         processVideoPacket(frame.data);
+        const uint64_t decode_us = now_us();
+
+        if (csv) {
+            std::fprintf(csv,
+                "%u,%llu,%llu,%llu,%llu,%u,%u,1\n",
+                frame.frame_id,
+                (unsigned long long)frame.capture_ts_us,
+                (unsigned long long)arrival_us,   // approximation: last-frag arrival
+                (unsigned long long)complete_us,
+                (unsigned long long)decode_us,
+                frame.frag_count,
+                frame.frag_received);
+            std::fflush(csv);
+        }
     }
+
+    if (csv) std::fclose(csv);
+
+    std::cerr << "[receiver] completed=" << reasm.frames_completed()
+              << " dropped="   << reasm.frames_dropped()
+              << " timed_out=" << reasm.frames_timed_out() << "\n";
 }
 
 static constexpr int MAX_QUEUE_FRAMES = 10;

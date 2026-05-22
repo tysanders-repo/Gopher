@@ -3,52 +3,83 @@
 
 #include "gopher/packet.hpp"
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <vector>
 
 namespace gopher {
 
-// Stateful per-receiver reassembler. Feed every received datagram in via
-// `ingest(...)`. When a frame completes, the assembled payload is returned in
-// `out` and `ingest` returns true. On any out-of-order, missing-fragment, or
-// frame-boundary anomaly the in-flight frame is discarded.
+// Per-receiver UDP fragment reassembler.
 //
-// Counters track lost frames for backpressure / diagnostics.
+// Holds up to MAX_PENDING in-flight frames in a map keyed by frame_id.
+// When the table overflows, the oldest frame is evicted. Frames that haven't
+// completed within TIMEOUT_US are dropped by sweep_timeouts().
+//
+// The receiver feeds each datagram into ingest(); when one completes the
+// frame, ingest returns FrameReady and out is populated with the assembled
+// payload + metadata. Periodically (or after each ingest) the caller should
+// also call sweep_timeouts() with the current monotonic clock to age out
+// frames whose fragments never finished arriving.
 class FrameReassembler {
 public:
+    static constexpr std::size_t MAX_PENDING = 8;
+    static constexpr std::uint64_t TIMEOUT_US = 50'000;  // 50 ms
+
     enum class Result {
         Incomplete,   // fragment accepted, more expected
-        FrameReady,   // out contains a complete frame; type/keyframe/timestamp are valid
-        Dropped,      // garbage or out-of-order; any in-flight frame was discarded
+        FrameReady,   // out is valid
+        Dropped,      // datagram rejected (bad header, wrong version, etc.)
     };
 
     struct Output {
         std::vector<uint8_t> data;
         uint8_t  type;
         bool     is_keyframe;
-        uint64_t timestamp_us;
-        uint32_t frame_seq;
+        uint16_t stream_id;
+        uint32_t frame_id;
+        uint64_t capture_ts_us;
+        uint16_t frag_count;
+        uint16_t frag_received;  // == frag_count on FrameReady
     };
 
-    Result ingest(const uint8_t* datagram, std::size_t len, Output& out);
+    // now_us is the receiver's monotonic clock in microseconds.
+    Result ingest(const uint8_t* datagram, std::size_t len,
+                  std::uint64_t now_us, Output& out);
 
-    std::uint64_t frames_completed() const { return frames_completed_; }
-    std::uint64_t frames_dropped()   const { return frames_dropped_; }
+    // Evict frames whose first fragment arrived more than TIMEOUT_US ago.
+    // Increments frames_timed_out_ for each evicted frame.
+    void sweep_timeouts(std::uint64_t now_us);
+
+    std::uint64_t frames_completed()  const { return frames_completed_; }
+    std::uint64_t frames_dropped()    const { return frames_dropped_; }
+    std::uint64_t frames_timed_out()  const { return frames_timed_out_; }
+    std::size_t   pending_size()      const { return pending_.size(); }
 
 private:
-    void reset_inflight();
+    struct PendingFrame {
+        uint8_t  type{0};
+        uint16_t flags{0};
+        uint16_t stream_id{0};
+        uint32_t frame_id{0};
+        uint16_t frag_count{0};
+        uint16_t frag_received{0};
+        uint64_t capture_ts_us{0};
+        uint64_t first_arrived_us{0};
+        // Fragment storage. We assemble lazily on completion to avoid the
+        // inner vector-of-vector noise; instead we pre-size to frag_count and
+        // record (offset, length) for each fragment, then concatenate on done.
+        std::vector<std::vector<uint8_t>> frags;  // size == frag_count
+        std::vector<bool> have;                   // size == frag_count
+    };
 
-    bool     have_inflight_{false};
-    uint32_t inflight_seq_{0};
-    uint16_t next_fragment_idx_{0};
-    uint8_t  inflight_type_{0};
-    uint64_t inflight_timestamp_{0};
-    bool     inflight_is_key_{false};
-    std::vector<uint8_t> inflight_data_;
+    void emit(PendingFrame& pf, Output& out);
+    void evict_oldest();
 
+    std::map<uint32_t, PendingFrame> pending_;
     std::uint64_t frames_completed_{0};
     std::uint64_t frames_dropped_{0};
+    std::uint64_t frames_timed_out_{0};
 };
 
 }  // namespace gopher

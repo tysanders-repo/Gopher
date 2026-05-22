@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Summarize gopher receiver CSV metrics (P50/P95/P99 latency, drop rate)."""
+import csv
+import statistics
+import sys
+
+
+def main(path):
+    rows = []
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            rows.append({
+                "frame_id":     int(row["frame_id"]),
+                "capture":      int(row["capture_ts_us"]),
+                "first":        int(row["first_arrived_us"]),
+                "complete":     int(row["complete_us"]),
+                "decode":       int(row["decode_us"]),
+                "frag_total":   int(row["frag_total"]),
+                "frag_received":int(row["frag_received"]),
+                "ok":           int(row["complete"]),
+            })
+
+    if not rows:
+        print(f"{path}: no rows")
+        return 1
+
+    lat_ms      = [(r["decode"]  - r["capture"]) / 1000.0 for r in rows if r["ok"]]
+    reasm_ms    = [(r["complete"] - r["first"])   / 1000.0 for r in rows if r["ok"]]
+    decode_ms   = [(r["decode"]   - r["complete"]) / 1000.0 for r in rows if r["ok"]]
+    incomplete  = sum(1 for r in rows if not r["ok"])
+
+    first_id, last_id = rows[0]["frame_id"], rows[-1]["frame_id"]
+    span_us           = rows[-1]["decode"] - rows[0]["capture"]
+    span_s            = span_us / 1_000_000
+
+    def pct(xs, p):
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(len(xs) * p))]
+
+    print(f"file              : {path}")
+    print(f"frames logged     : {len(rows)}  (id {first_id}..{last_id})")
+    print(f"complete          : {len(lat_ms)}")
+    print(f"incomplete        : {incomplete}")
+    print(f"wall span         : {span_s:.2f} s   ({len(rows) / span_s:.1f} fps)")
+    print()
+    print("end-to-end latency (capture → decode)")
+    print(f"  P50             : {statistics.median(lat_ms):.2f} ms")
+    print(f"  P95             : {pct(lat_ms, 0.95):.2f} ms")
+    print(f"  P99             : {pct(lat_ms, 0.99):.2f} ms")
+    print(f"  max             : {max(lat_ms):.2f} ms")
+    print(f"  mean            : {statistics.mean(lat_ms):.2f} ms")
+    print()
+    print(f"reassembly span (first frag → complete): P50 {statistics.median(reasm_ms):.2f} ms  "
+          f"P99 {pct(reasm_ms, 0.99):.2f} ms")
+    print(f"decode time     (complete → decoded):    P50 {statistics.median(decode_ms):.2f} ms  "
+          f"P99 {pct(decode_ms, 0.99):.2f} ms")
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(f"usage: {sys.argv[0]} <recv.csv>", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1]))

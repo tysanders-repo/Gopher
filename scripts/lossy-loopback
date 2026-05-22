@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Configure macOS pfctl + dnctl (dummynet) to simulate packet loss and
+# delay on the loopback interface for UDP ports in 50000-60000.
+#
+# This is the "5% loss, 50ms delay" knob from the M1 DoD. Requires sudo
+# because pf is a kernel firewall. Cleanly reverses with the `off` mode.
+#
+# Usage:
+#   scripts/lossy-loopback on   [loss_pct] [delay_ms]   # defaults: 5  50
+#   scripts/lossy-loopback off
+#
+# Then in two other terminals:
+#   scripts/dual-peer --test-pattern --csv-dir /tmp/lossy
+# And after a 60s run, kill it and:
+#   scripts/metrics-summary /tmp/lossy/recv_a.csv
+#   scripts/metrics-summary /tmp/lossy/recv_b.csv
+
+set -euo pipefail
+
+MODE="${1:-}"
+LOSS_PCT="${2:-5}"
+DELAY_MS="${3:-50}"
+
+if [[ -z "$MODE" ]]; then
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+fi
+
+ANCHOR=gopher
+
+case "$MODE" in
+  on)
+    # Probability is a 0..1 fraction; convert from percent.
+    PLR=$(awk -v p="$LOSS_PCT" 'BEGIN{printf "%.4f", p/100.0}')
+    echo "==> ${LOSS_PCT}% loss + ${DELAY_MS}ms one-way delay on lo0 UDP 50000-60000"
+    sudo dnctl pipe 1 config plr "$PLR" delay "${DELAY_MS}"
+    # Anchor rule that matches both directions of our test traffic.
+    sudo bash -c "cat <<'EOF' | pfctl -a ${ANCHOR} -f -
+dummynet in  on lo0 proto udp from any to any port 50000:60000 pipe 1
+dummynet out on lo0 proto udp from any to any port 50000:60000 pipe 1
+EOF"
+    sudo pfctl -E >/dev/null 2>&1 || true
+    sudo pfctl -a "${ANCHOR}" -s rules
+    echo "==> active. Disable with: scripts/lossy-loopback off"
+    ;;
+  off)
+    sudo pfctl -a "${ANCHOR}" -F all 2>/dev/null || true
+    sudo dnctl -q flush 2>/dev/null || true
+    sudo pfctl -d 2>/dev/null || true
+    echo "==> cleaned up (loopback restored to clean)"
+    ;;
+  *)
+    echo "Unknown mode: $MODE  (use 'on' or 'off')" >&2
+    exit 2
+    ;;
+esac
